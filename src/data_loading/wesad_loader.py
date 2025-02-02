@@ -136,9 +136,16 @@ class WESADLoader(BaseDataLoader):
         )
 
     def _create_label_df(self, label_data: np.ndarray) -> pd.DataFrame:
-        """Create label DataFrame with categorical handling"""
+        """Create label DataFrame with unknown values mapped to baseline"""
+        # Clean labels before DataFrame creation
+        valid_labels = set(self.LABEL_MAP.keys())
+        cleaned_labels = np.array([
+            0 if label not in valid_labels else label 
+            for label in label_data.flatten()
+        ])
+        
         return pd.DataFrame(
-            {'label': label_data.flatten()},
+            {'label': cleaned_labels},
             index=pd.date_range(
                 start=0,
                 periods=len(label_data),

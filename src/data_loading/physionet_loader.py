@@ -88,43 +88,75 @@ class PhysioNetLoader(BaseDataLoader):
         """Load and align data with event periods from tags.csv"""
         try:
             session_path = self.data_path / f"S{subject_id}" / session
-            target_freq = f"{1000//self.target_rate}ms"  # 33ms for 30Hz
             
-            # 1. Create empty resampled index for entire session duration
-            first_sensor = next((s for s in ['ACC', 'BVP'] if (session_path/f"{s}.csv").exists()), None)
-            if not first_sensor:
-                return pd.DataFrame(columns=self.EXPECTED_COLUMNS)
+            # 1. Get initial time from any sensor using _load_sensor_data
+            initial_time = None
+            for sensor_file in session_path.glob("*.csv"):
+                if sensor_file.name.lower() in ['tags.csv', 'info.txt']:
+                    continue
+                initial_time, _, _ = self._load_sensor_data(sensor_file)
+                if initial_time > 0:
+                    break
+                
+            if not initial_time:
+                raise ValueError("No valid sensor files found")
+
+            # 2. Create unified time index using BVP sensor as reference
+            bvp_time, bvp_rate, bvp_data = self._load_sensor_data(session_path/'BVP.csv')
+            session_duration = len(bvp_data) / bvp_rate
+            full_index = pd.date_range(
+                start=pd.to_datetime(initial_time, unit='s', utc=True),
+                end=pd.to_datetime(bvp_time, unit='s', utc=True) + pd.Timedelta(seconds=session_duration),
+                freq=f"{1000//self.target_rate}ms",
+                tz='UTC',
+                inclusive='left'
+            )
+            base_df = pd.DataFrame(index=pd.DatetimeIndex(full_index, name='timestamp'))
+            base_df.index = base_df.index.tz_convert('UTC')  # Force UTC timezone
+
+            # 3. Load and resample all sensors through _load_sensor_data
+            sensor_map = {
+                'ACC': ['acc_x', 'acc_y', 'acc_z'],
+                'BVP': ['bvp'],
+                'EDA': ['eda'],
+                'TEMP': ['temp'],
+                'HR': ['hr']
+            }
             
-            _, _, sample_data = self._load_sensor_data(session_path/f"{first_sensor}.csv")
-            full_index = sample_data.resample(target_freq).asfreq().index
-            base_df = pd.DataFrame(index=full_index)
+            for sensor, cols in sensor_map.items():
+                t, sr, df = self._load_sensor_data(session_path/f"{sensor}.csv")
+                if df.empty:
+                    continue
+                
+                # Create proper datetime index for raw sensor data
+                df.index = pd.date_range(
+                    start=pd.to_datetime(t, unit='s', utc=True),
+                    periods=len(df),
+                    freq=pd.DateOffset(seconds=1/sr)
+                )
+                
+                # Resample with forward fill for wearable data
+                resampled = df.resample(f"{1000//self.target_rate}ms").ffill()
+                base_df[cols] = resampled.reindex(base_df.index, method='nearest')
 
-            # 2. Load and resample all sensors
-            sensor_data = {}
-            for sensor in ['ACC', 'BVP', 'EDA', 'TEMP', 'HR']:
-                path = session_path/f"{sensor}.csv"
-                if path.exists():
-                    _, sr, data = self._load_sensor_data(path)
-                    resampled = data.resample(target_freq).mean()
-                    sensor_data[sensor.lower()] = resampled.reindex(full_index)
-
-            # 3. Merge all sensor data
-            for name, data in sensor_data.items():
-                if name == 'acc':
-                    base_df[['acc_x', 'acc_y', 'acc_z']] = data[['acc_x', 'acc_y', 'acc_z']]
-                else:
-                    base_df[name] = data[name] if name in data.columns else 0.0
-
-            # 4. Load and apply event periods from tags.csv
+            # 4. Load and process tags.csv events
             base_df['event'] = 0
             tags_file = session_path / 'tags.csv'
             if tags_file.exists() and tags_file.stat().st_size > 0:
                 try:
-                    tags = pd.read_csv(tags_file, header=None, names=['start', 'end'])
-                    for _, row in tags.iterrows():
-                        start = pd.to_datetime(row['start'], unit='s', utc=True)
-                        end = pd.to_datetime(row['end'], unit='s', utc=True)
-                        base_df.loc[start:end, 'event'] = 1
+                    # Read all timestamps as UTC
+                    event_times = pd.to_datetime(
+                        pd.read_csv(tags_file, header=None)[0],
+                        unit='s',
+                        utc=True
+                    )
+                    
+                    # Mark 5-minute windows after each button press
+                    for event_start in event_times:
+                        event_end = event_start + pd.Timedelta(minutes=5)
+                        mask = (base_df.index >= event_start) & (base_df.index <= event_end)
+                        base_df.loc[mask, 'event'] = 1
+                        
                 except Exception as e:
                     self.logger.error(f"Tags processing failed: {str(e)}")
 
@@ -132,9 +164,13 @@ class PhysioNetLoader(BaseDataLoader):
             base_df['subject_id'] = subject_id
             base_df['session'] = session
             base_df['sampling_rate'] = self.target_rate
-            base_df.ffill(inplace=True)  # Handle any resampling gaps
+            base_df.fillna(0, inplace=True)
             
-            return base_df.reindex(columns=self.EXPECTED_COLUMNS, fill_value=0.0)
+            # Final index validation
+            if not isinstance(base_df.index, pd.DatetimeIndex):
+                raise TypeError("Final dataframe missing datetime index")
+            
+            return base_df.reindex(columns=self.EXPECTED_COLUMNS)
 
         except Exception as e:
             self.logger.error(f"Subject load failed: {str(e)}")
@@ -161,47 +197,31 @@ class PhysioNetLoader(BaseDataLoader):
             return (0, 0, pd.DataFrame())
 
     def _load_sensor_data(self, file_path: Path) -> tuple[float, float, pd.DataFrame]:
-        """Load sensor data with proper datetime index creation"""
+        """Single source of truth for sensor data loading"""
         try:
+            if not file_path.exists():
+                return (0.0, 0.0, pd.DataFrame())
+
             with open(file_path, 'r') as f:
-                # Read header lines
-                if 'ACC' in file_path.name:
-                    initial_time = float(f.readline().split(',')[0].strip())
-                    sample_rate = float(f.readline().split(',')[0].strip())
-                else:
-                    initial_time = float(f.readline().strip())
-                    sample_rate = float(f.readline().strip())                
-                # Load sensor data
-                if 'ACC' in file_path.name:
-                    df = pd.read_csv(
-                        f, 
-                        header=None,
-                        names=['acc_x', 'acc_y', 'acc_z'],
-                        dtype=np.float32,
-                        sep=r'\s*,\s*',
-                        engine='python'
-                    )
-                else:
-                    sensor_name = file_path.stem.lower()
-                    df = pd.read_csv(
-                        f,
-                        header=None,
-                        names=[sensor_name],
-                        dtype=np.float32
-                    )
+                # Parse initial time from first value in first line
+                first_line = f.readline().strip()
+                initial_time = float(first_line.split(',')[0].strip())
                 
-                # Create datetime index
-                timestamps = pd.date_range(
-                    start=pd.to_datetime(initial_time, unit='s', utc=True),
-                    periods=len(df),
-                    freq=pd.DateOffset(seconds=1/sample_rate)
-                )
-                df.index = timestamps
-                
-                return (initial_time, sample_rate, df)
+                # Parse sample rate from first value in second line
+                second_line = f.readline().strip()
+                sample_rate = float(second_line.split(',')[0].strip())
+
+                # Load data with column validation
+                if file_path.name.upper() == 'ACC.CSV':
+                    df = pd.read_csv(f, header=None, names=['acc_x','acc_y','acc_z'])
+                else:
+                    col_name = file_path.stem.lower()
+                    df = pd.read_csv(f, header=None, names=[col_name])
+
+            return (initial_time, sample_rate, df)
 
         except Exception as e:
-            self.logger.error(f"Sensor load error: {str(e)}")
+            self.logger.error(f"Sensor load failed ({file_path.name}): {str(e)}")
             return (0.0, 0.0, pd.DataFrame())
 
     def _process_data(self, subject_path: Path, exam_type: str, subject_id: int) -> pd.DataFrame:
