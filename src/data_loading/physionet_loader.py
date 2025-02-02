@@ -85,56 +85,54 @@ class PhysioNetLoader(BaseDataLoader):
             return pd.Series(name='event', dtype='float32')
 
     def load_subject(self, subject_id: int, session: str) -> pd.DataFrame:
-        """Create unified datetime index before merging"""
+        """Load and align data with event periods from tags.csv"""
         try:
             session_path = self.data_path / f"S{subject_id}" / session
-            base_df = pd.DataFrame(index=pd.DatetimeIndex([], tz='UTC'))
+            target_freq = f"{1000//self.target_rate}ms"  # 33ms for 30Hz
             
-            for sensor in ['bvp', 'acc', 'eda', 'temp', 'hr']:
-                try:
-                    _, sr, data = self._load_sensor_data(session_path/f"{sensor.upper()}.csv")
-                    if not data.empty:
-                        # Resample to target rate
-                        resampled = data.resample(f'{1000//self.target_rate}ms').mean()
-                        base_df = base_df.combine_first(resampled)
-                except FileNotFoundError:
-                    self.logger.warning(f"Missing {sensor} data")
+            # 1. Create empty resampled index for entire session duration
+            first_sensor = next((s for s in ['ACC', 'BVP'] if (session_path/f"{s}.csv").exists()), None)
+            if not first_sensor:
+                return pd.DataFrame(columns=self.EXPECTED_COLUMNS)
+            
+            _, _, sample_data = self._load_sensor_data(session_path/f"{first_sensor}.csv")
+            full_index = sample_data.resample(target_freq).asfreq().index
+            base_df = pd.DataFrame(index=full_index)
 
-            # Load event markers from tags.csv
+            # 2. Load and resample all sensors
+            sensor_data = {}
+            for sensor in ['ACC', 'BVP', 'EDA', 'TEMP', 'HR']:
+                path = session_path/f"{sensor}.csv"
+                if path.exists():
+                    _, sr, data = self._load_sensor_data(path)
+                    resampled = data.resample(target_freq).mean()
+                    sensor_data[sensor.lower()] = resampled.reindex(full_index)
+
+            # 3. Merge all sensor data
+            for name, data in sensor_data.items():
+                if name == 'acc':
+                    base_df[['acc_x', 'acc_y', 'acc_z']] = data[['acc_x', 'acc_y', 'acc_z']]
+                else:
+                    base_df[name] = data[name] if name in data.columns else 0.0
+
+            # 4. Load and apply event periods from tags.csv
+            base_df['event'] = 0
             tags_file = session_path / 'tags.csv'
-            if tags_file.exists():
+            if tags_file.exists() and tags_file.stat().st_size > 0:
                 try:
-                    with open(tags_file, 'r') as f:
-                        # Read all non-empty lines as timestamps
-                        event_times = [
-                            pd.to_datetime(float(line.strip()), unit='s', utc=True)
-                            for line in f if line.strip()
-                        ]
-                    
-                    # Create event markers at precise timestamps
-                    self.logger.info("Found event times:", event_times)
-                    events = pd.DataFrame(   
-                        index=event_times,
-                        data={'event': 1},
-                        dtype=np.uint8
-                    )
-
-                    # Merge with main dataframe
-                    base_df['event'] = events.reindex(base_df.index, fill_value=0)
-                
+                    tags = pd.read_csv(tags_file, header=None, names=['start', 'end'])
+                    for _, row in tags.iterrows():
+                        start = pd.to_datetime(row['start'], unit='s', utc=True)
+                        end = pd.to_datetime(row['end'], unit='s', utc=True)
+                        base_df.loc[start:end, 'event'] = 1
                 except Exception as e:
-                    self.logger.error(f"Error processing events: {str(e)}")
-                    base_df['event'] = 0
+                    self.logger.error(f"Tags processing failed: {str(e)}")
 
-            else:
-                base_df['event'] = 0
-                self.logger.info("No tags file found")
-            
-            # Add metadata and validate
+            # 5. Add metadata and final cleanup
             base_df['subject_id'] = subject_id
             base_df['session'] = session
             base_df['sampling_rate'] = self.target_rate
-            
+            base_df.ffill(inplace=True)  # Handle any resampling gaps
             
             return base_df.reindex(columns=self.EXPECTED_COLUMNS, fill_value=0.0)
 
