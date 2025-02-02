@@ -1,0 +1,21 @@
+name: stress_monitor
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10.12
+  - pip
+  - numpy=1.26.4
+  - pandas=2.1.4
+  - scipy=1.11.4
+  - matplotlib=3.8.2
+  - seaborn=0.13.1
+  - jupyter=1.0.0
+  - scikit-learn=1.3.2
+  - tqdm=4.66.1
+  - pip:
+    - wfdb==4.1.1          # For PhysioNet data
+    - pywavelets==1.5.0    # For WESAD signal processing
+    - pandas-profiling==3.6.6
+    - plotly==5.18.0
+    - joblib==1.3.2        # For WESAD pickle loading 
