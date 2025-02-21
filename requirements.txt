@@ -19,3 +19,5 @@ scikit-learn==1.3.2  # Preliminary analysis
 # Jupyter
 jupyter==1.0.0
 ipykernel==6.27.1
+
+pyarrow 

@@ -68,6 +68,12 @@ Phase 1: Setup and Data Loading. This includes environment setup, installing nec
 
 Phase 2: Data Preparation. Here, aligning signals from different sensors, handling missing data, and augmenting data to simulate smartwatch limitations. Techniques like resampling and synthetic noise addition are key. The success is having clean, aligned data.
 
+in phase 2 : addtional resources used : 
+Use 0.42μV (Apple) / 0.38μV (Samsung) from "Wearable PPG Noise Analysis" (2023)
+Add melanin absorption coefficients from "Optical Skin Effects" (J. Biomed. Opt. 2020)
+"Motion Artifact Reduction in PPG Signals" (IEEE TBME 2015)
+"Skin Tone Effects on PPG Signals" (Nature Sci. Reports 2021)
+
 Phase 3: Signal Processing. Focus on cleaning PPG signals, motion artifact removal, and deriving proxy measures for missing sensors like EDA. Using filters and wavelet transforms. Success is improved signal quality metrics.
 
 Phase 4: Feature Engineering. Extracting time-domain, frequency-domain, and multimodal features. Using libraries like TSFRESH and creating images for CNNs. Success is a robust feature set with high importance scores.
@@ -98,14 +104,3 @@ Deployment Prep requires optimization techniques from Rashid and the Apple Watch
 Maintenance phase can use Rashid's continuous learning and the Apple Watch study's longitudinal aspects.
 
 
-
-
-
-Dataset storage locations :
-wesad dataset :
-raw_data/WESAD
-
-physionet dataset :
-raw_data/a-wearable-exam-stress-dataset-for-predicting-cognitive-performance-in-real-world-settings-1.0.0
-
-dont give any code for now there is lot to say you. but tell me do you know about these datasets completely or do you need and aditioinal informatioin regarding these datsets like sampling rates follwed in each one, data organizaatio structure or how stress label is mentioned etc.. to better load data? or do you have knowledge about all these?

@@ -30,6 +30,9 @@ class PhysioNetLoader(BaseDataLoader):
         'subject_id', 'session', 'sampling_rate'
     ]
 
+    # Add class-level constant
+    TARGET_SAMPLING_RATE = 30.0  # Hz
+
     def __init__(self, data_path: str, target_rate: int = 30):
         super().__init__(data_path, target_rate, dataset_name='physionet')
         self.raw_sample_rate = 64  # BVP @ 64Hz
@@ -421,6 +424,19 @@ class PhysioNetLoader(BaseDataLoader):
         except Exception as e:
             self.logger.error(f"ACC load failed: {str(e)}")
             return pd.DataFrame()
+        
+    def is_tags_empty(self, subject_id: int, exam_type: str) -> bool:
+        """Check if tags.csv exists and contains valid data"""
+        tags_path = self.data_path / f"S{subject_id}" / exam_type / 'tags.csv'
+        
+        if not tags_path.exists():
+            return True
+            
+        try:
+            tags_df = pd.read_csv(tags_path)
+            return tags_df.empty
+        except:
+            return True        
 
     def _validate_subject_path(self, subject_id: int, exam_type: str) -> Path:
         """Validate and return subject data path"""
@@ -432,3 +448,13 @@ class PhysioNetLoader(BaseDataLoader):
             raise FileNotFoundError(f"Subject {subject_id} data not found at {subj_path}")
         
         return subj_path
+
+    def get_sampling_rate(self) -> float:
+        """Return target rate for preparation phase"""
+        return self.TARGET_SAMPLING_RATE
+
+    def get_recording_start(self, subject_id: int) -> pd.Timestamp:
+        """Get approximate recording start time for alignment"""
+        # Implementation example
+        base_date = pd.Timestamp("2020-01-01 08:00:00", tz='UTC')
+        return base_date + pd.DateOffset(days=subject_id)
