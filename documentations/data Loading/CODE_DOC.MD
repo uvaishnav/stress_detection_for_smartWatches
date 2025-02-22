@@ -184,20 +184,6 @@ def _normalize_bvp(self, bvp_series: pd.Series) -> pd.Series:
 
 ---
 
-### 🔄 **Data Flow Pipeline**
-```mermaid
-sequenceDiagram
-    participant Device as Wearable Device
-    participant Loader as DataLoader
-    participant Features as Feature Extraction
-    
-    Device->>Loader: Raw Signals (BVP@64Hz, ACC@32Hz)
-    Note right of Loader: 1. Anti-aliasing filtering<br>2. Resample to 30Hz<br>3. Validate ranges
-    Loader->>Features: Cleaned DataFrame (30Hz aligned)
-    Features->>Features: Extract HRV/Time-domain features
-    Features->>Model: Stress classification inputs
-```
-
 #### 📚 **References:**
 - [1] [IEEE Standard for Digitizing Waveform Recorders](https://ieeexplore.ieee.org/document/8291741)  
 - [2] [Allen J. (2007) - Photoplethysmography Signal Processing](https://doi.org/10.1109/TBME.2007.903516)  
@@ -377,15 +363,16 @@ where $n=5$ (order), $\omega_c$ = cutoff frequency (80% of target Nyquist)
 **Performance Complexity**: O(n) - Linear time via `filtfilt` implementation  
 **Validation Strategy**: Benchmark against MATLAB's `resample()` with identical parameters ([MATLAB Comparison Report](https://www.mathworks.com/help/signal/ref/resample.html))
 
----
 
 ### 📊 **resample_data()**
 **Mathematical Foundation**:  
 Decimation equation:  
 ```math
-x_d[n] = \frac{1}{M} \sum_{k=0}^{M-1} x(nT - kT_{orig})
+x_d[n] = \frac{1}{M} \sum_{k=0}^{M-1} x(nT - kT_{\text{orig}})
 ```
-where $M = \text{original\_rate} / \text{target\_rate}$
+where $M = \frac{\text{original\_rate}}{\text{target\_rate}}$
+```
+
 
 **Parameters**:  
 | Parameter       | Justification                                                       |
