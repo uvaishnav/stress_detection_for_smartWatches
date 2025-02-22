@@ -370,7 +370,7 @@ Decimation equation:
 ```math
 x_d[n] = \frac{1}{M} \sum_{k=0}^{M-1} x(nT - kT_{\text{orig}})
 ```
-where $M = \frac{\text{original\_rate}}{\text{target\_rate}}$
+where $M = \frac{\text{original-rate}}{\text{target-rate}}$
 ```
 
 
