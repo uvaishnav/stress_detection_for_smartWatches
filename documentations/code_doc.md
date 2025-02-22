@@ -140,6 +140,7 @@ param1	Type	[Explanation]
 Performance Complexity: e.g., O(n)
 Validation Strategy: [How function outputs are benchmarked]
 
+
 you should give me the result in markdown format only.
 
 ## 8. Experimental Configuration
@@ -192,3 +193,11 @@ flowchart LR
     C --> D[Publication Figure]
 
 you should give me the result in markdown format only.
+
+
+
+
+
+Search in web for some other related works that suits well with the code. that might include choice taken or the constant value considered.
+
+Also please get the url to that paper and mention it with respect to every paper mentioned by you.

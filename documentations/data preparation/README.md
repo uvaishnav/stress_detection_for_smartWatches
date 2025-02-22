@@ -95,8 +95,25 @@ Three-stage processing architecture:
    - Continuity checks (max 2s gaps)  
 
 **Data Flow Diagram:**  
-![Pipeline Architecture](diagrams/pipeline_flow.png)  
-_Figure 1: Three-stage processing architecture_
+```mermaid
+graph TD
+    subgraph Three-Stage Processing Architecture
+        direction LR
+        A[Raw Data Sources] --> B{{Data Ingestion}}
+        B --> C[[Data Processing]]
+        C --> D[Processed Output]
+    end
+    
+    classDef source fill:#f8f9fa,stroke:#4a4a4a,stroke-width:2px
+    classDef ingest fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    classDef process fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    classDef output fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    
+    class A source
+    class B ingest
+    class C process
+    class D output
+```
 
 **Implementation Strategy:**  
 1. BasePreparer abstract class for common functionality  
@@ -145,7 +162,7 @@ _Figure 1: Three-stage processing architecture_
 | Validator          | Data quality assurance                 | Great Expectations       |
 
 **Data Flow:**  
-mermaid
+```mermaid
 graph TD
 A[Raw Data] --> B{Dataset Type}
 B -->|PhysioNet| C[Exam Splitter]
@@ -157,7 +174,7 @@ F --> G
 G --> H[NoiseSimulator]
 H --> I[DatasetMerger]
 I --> J[Unified Dataset]
-
+```
 
 
 **Key Data Transformations:**  
