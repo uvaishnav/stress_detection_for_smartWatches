@@ -37,26 +37,36 @@
 ### 🧩 Workflow Diagram  
 ```mermaid
 flowchart TD
-    A[data_loading\n[PhysioNetLoader, WESADLoader]] --> B[Data Preparation Module]
-    
-    subgraph Data_Preparation_Module
-        direction TB
-        B --> C[Preprocess Data\n(Clip ACC, Label Mapping)]
-        C --> D[SensorAligner]
-        D --> E[Align PPG Wavelengths]
-        D --> F[Remap ACC Axes\n(NED→ENU)]
-        C --> G[NoiseSimulator]
-        G --> H[Add Device Noise\n(Apple/Galaxy)]
-        G --> I[Add Skin-Tone Effects\n(I-II to V-VI)]
-        H --> J[Validate Data\n(Schema, Sampling Rate)]
-        I --> J
-        J --> K[Save to Parquet\n(Metadata Embedding)]
-    end
-    
-    K --> L[signal_processing\n(Feature Extraction)]
-    K --> M[model_training\n(Stress Classification)]
-    
-    subgraph Orchestration
-        N[UnifiedDataPipeline] -->|Batch Process| O[Subjects 1-17]
-        N -->|Merge Datasets| P[Cross-Dataset Alignment]
-    end
+ subgraph Data_Preparation_Module["Data_Preparation_Module"]
+    direction TB
+        C["Preprocess Data - Clip ACC, Label Mapping"]
+        B["Data Preparation Module"]
+        D["SensorAligner"]
+        E["Align PPG Wavelengths"]
+        F["Remap ACC Axes - NED→ENU"]
+        G["NoiseSimulator"]
+        H["Add Device Noise - Apple/Galaxy"]
+        I["Add Skin-Tone Effects - I-II to V-VI"]
+        J["Validate Data - Schema, Sampling Rate"]
+        K["Save to Parquet - Metadata Embedding"]
+  end
+ subgraph Orchestration["Orchestration"]
+        O["Subjects 1-17"]
+        N["UnifiedDataPipeline"]
+        P["Cross-Dataset Alignment"]
+  end
+    A["data_loading"] --> B
+    B --> C
+    C --> D & G
+    D --> E & F
+    G --> H & I
+    H --> J
+    I --> J
+    J --> K
+    K --> L["signal_processing - Feature Extraction"]
+    N -- Batch Process --> O
+    N -- Merge Datasets --> P
+
+
+
+
