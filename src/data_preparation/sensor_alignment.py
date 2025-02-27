@@ -68,11 +68,10 @@ class SensorAligner:
         return merged 
     
     def temporal_align(self, data: pd.DataFrame, reference: pd.DataFrame = None) -> pd.DataFrame:
-        """Align timestamps using dynamic time warping"""
+        """Align timestamps using index-based joining"""
         if reference is None:
-            return data  # No alignment needed for first variant
+            return data
         
-        # Simple linear interpolation for initial implementation
-        aligned = data.reindex_like(reference).interpolate(method='time')
-        aligned['label'] = data['label'].reindex(aligned.index, method='ffill')
-        return aligned.fillna(method='ffill')
+        # Use pandas join for timestamp alignment
+        aligned = data.join(reference, how='inner', rsuffix='_ref')
+        return aligned[data.columns]  # Keep original columns

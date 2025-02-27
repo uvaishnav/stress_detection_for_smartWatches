@@ -28,22 +28,22 @@
 | Data Acquisition | Download WESAD, PhysioNet datasets | UCI Repository |
 | Signal Analysis | Plot raw PPG/ACC signals | Matplotlib, Seaborn |
 
-### Phase 2: Signal Processing (Week 3-4)
+### Phase: Signal Processing (Week 3-4)
 | Technique | Implementation |
 |-----------|----------------|
 | Motion Removal | Adaptive LMS filter + Wavelet denoising |
 | EDA Proxy | Pulse transit time from PPG derivatives |
 | HRV Correction | Motion-aware RMSSD/pNN50 calculation |
 
-### Phase 3: Model Development (Week 5-8)
+### Phase: Model Development (Week 5-8)
 Hybrid CNN-LSTM Architecture
 
-### Phase 4: Optimization (Week 9-10)
+### Phase : Optimization (Week 9-10)
 - **Pruning**: Remove 50% low-weight neurons
 - **Quantization**: FP32 → INT8 conversion
 - **Deployment**: CoreML/TFLite conversion
 
-### Phase 5: Validation (Week 11-12)
+### Phase : Validation (Week 11-12)
 - **Lab Testing**: Controlled stress tasks (n=50)
 - **Field Testing**: Real-world usage (n=200)
 - **Benchmarks**: Accuracy, Latency, Battery Impact
