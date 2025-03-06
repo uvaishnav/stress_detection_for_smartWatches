@@ -1,5 +1,6 @@
 import numpy as np
 import logging
+from scipy import signal
 
 logging.basicConfig(level=logging.INFO)
 
@@ -14,7 +15,12 @@ class AdaptiveFilter:
         """
         self.learning_rate = learning_rate
         self.filter_length = filter_length
-        self.coefficients = np.zeros(filter_length)   # Small random initialization
+        self.coefficients = np.random.uniform(-0.1, 0.1, filter_length)
+        self.bp_filter = signal.butter(2, [0.5, 3], 'bandpass', fs=30, output='sos')
+
+    def _bandpass_filter(self, acc_mag: np.ndarray) -> np.ndarray:
+        """Add bandpass filtering to reference signal"""
+        return signal.sosfilt(self.bp_filter, acc_mag)
 
     def apply_adaptive_filter(self, noisy_signal: np.ndarray, reference_signal: np.ndarray, motion_burst: np.ndarray) -> np.ndarray:
         """
@@ -29,35 +35,50 @@ class AdaptiveFilter:
             np.ndarray: Cleaned PPG signal.
         """
         logging.info(f"Applying adaptive filtering... Input length: {len(noisy_signal)}")
-        # Replace NaNs in reference_signal with small values
         reference_signal = np.nan_to_num(reference_signal, nan=1e-6)
-
+        reference_signal = self._bandpass_filter(reference_signal)  # Add bandpass
+        
+        # Add signal preservation guard
+        if np.all(noisy_signal == 0):
+            return noisy_signal
+        
+        # Add pre-filtering normalization
+        signal_mean = np.nanmean(noisy_signal)
+        noisy_signal = (noisy_signal - signal_mean) / (np.std(noisy_signal) + 1e-9)
+        
         filtered_signal = np.zeros_like(noisy_signal)
-        epsilon = 1e-6  # Small constant to avoid division by zero
+        dc_offset = np.median(noisy_signal)  # Capture DC offset before filtering
+        epsilon = 1e-6
+        max_order = min(self.filter_length, len(noisy_signal) // 2)  # Dynamic upper limit
 
-        for i in range(self.filter_length, len(noisy_signal)):
-            # Skip invalid indices
-            if i % 100000 == 0:  # Log every 1000th iteration
-                logging.info(f"Coeffs: {self.coefficients}, Error: {error}")
+        for i in range(max_order, len(noisy_signal)):
+            for _ in range(10):  # Multiple operations per sample
+                effective_order = min(max_order, i)
+                if np.any(np.isnan(reference_signal[i - effective_order:i])):
+                    filtered_signal[i] = noisy_signal[i]
+                    continue
 
-            if np.any(np.isnan(reference_signal[i - self.filter_length:i])):
-                filtered_signal[i] = noisy_signal[i]  # Pass through raw signal
-                continue
+                reference_slice = reference_signal[i - effective_order:i]
+                norm_squared = np.dot(reference_slice, reference_slice) + epsilon
 
-            reference_slice = reference_signal[i - self.filter_length:i]
-            reference_slice = reference_slice / (np.linalg.norm(reference_slice) + 1e-6)  # Normalize input window
-            norm_squared = np.dot(reference_slice, reference_slice) + epsilon
-            adjusted_lr = (self.learning_rate / norm_squared) * (1 + 2 * motion_burst[i])
-            error = noisy_signal[i] - np.dot(self.coefficients, reference_slice)
-            error = np.clip(error, -1e3, 1e3)  # Clip large errors
+                # NEW: Dynamic learning rate with time decay
+                current_lr = self.learning_rate * (1 + motion_burst[i]) / (1 + i/1e5)
+                adjusted_lr = current_lr / norm_squared
 
-            # Prevent NaNs in coefficient updates
-            if not np.isnan(error):
-                self.coefficients += adjusted_lr * error * reference_slice
+                error = noisy_signal[i] - np.dot(self.coefficients[:effective_order], reference_slice)
+                error = np.clip(error, -1e3, 1e3)  # Existing error clipping
 
-            filtered_signal[i] = noisy_signal[i] - error
+
+                # NEW: Gradient normalization
+                grad = error * reference_slice
+                grad_norm = np.linalg.norm(grad) + 1e-6
+                self.coefficients[:effective_order] += adjusted_lr * grad / grad_norm
+                
+                filtered_signal[i] = noisy_signal[i] - error
 
         if np.any(np.isnan(filtered_signal)):
             logging.warning("Adaptive filtering produced NaNs")
-
+            
+        # Post-filter restoration
+        filtered_signal = filtered_signal * (np.std(noisy_signal) + 1e-9) + signal_mean
         return filtered_signal

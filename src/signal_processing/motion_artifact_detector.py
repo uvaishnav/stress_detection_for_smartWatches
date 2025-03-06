@@ -27,21 +27,27 @@ class MotionArtifactDetector:
         Returns:
             pd.DataFrame: Dataset with an additional 'motion_burst' column.
         """
-        # Compute accelerometer magnitude
-        dataset['acc_mag'] = np.sqrt(dataset['acc_x']**2 + dataset['acc_y']**2 + dataset['acc_z']**2)
-
-        # Compute dynamic threshold based on median magnitude
-        median_acc_mag = dataset['acc_mag'].median()
-        if np.isnan(median_acc_mag) or median_acc_mag == 0:
-            median_acc_mag = 1.0  # Default small value to avoid division by zero
-        acc_threshold = median_acc_mag * self.acc_threshold_factor
-
-        # Identify motion bursts
-        window_size = int(self.burst_duration * self.sampling_rate)
-        rolling_max = dataset['acc_mag'].rolling(window=window_size, center=True).max()
-        dataset['motion_burst'] = (rolling_max > acc_threshold).astype(int)
-
-        # Ensure no NaNs in motion_burst
-        dataset['motion_burst'].fillna(0, inplace=True)
-
+        # Remove G-force conversion (data already in Gs)
+        # dataset['acc_x'] = ...  # Comment out conversion
+        
+        # Compute magnitude with safety checks
+        dataset['acc_mag'] = np.sqrt(
+            dataset['acc_x']**2 + 
+            dataset['acc_y']**2 + 
+            dataset['acc_z']**2
+        ).clip(upper=20)  # Cap unrealistic values
+        
+        # Dynamic threshold based on moving percentile
+        window_size = int(self.sampling_rate * 5)  # 5-second window
+        dataset['acc_threshold'] = dataset['acc_mag'].rolling(
+            window=window_size,
+            min_periods=1,
+            center=True
+        ).quantile(0.9)  # 90th percentile
+        
+        # Motion score calculation
+        motion_score = (dataset['acc_mag'] - dataset['acc_threshold']).clip(lower=0)
+        max_score = motion_score.rolling(window=window_size).max()
+        dataset['motion_burst'] = (max_score / (max_score.max() + 1e-9)).fillna(0)
+        
         return dataset
