@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 
 from scipy.signal import periodogram
+from scipy.signal import correlate
 
 class SignalProcessingPipeline:
     def __init__(self, learning_rate: float = 0.01, filter_length: int = 10, process_noise: float = 1e-5, measurement_noise: float = 1e-2):
@@ -48,122 +49,67 @@ class SignalProcessingPipeline:
         return np.clip(normalized, -3, 3)
 
     def process_signal(self, dataset: pd.DataFrame) -> pd.DataFrame:
-        """
-        Process the PPG signal using motion artifact detection, adaptive filtering, Kalman filtering, and wavelet denoising.
-        
-        Parameters:
-            dataset (pd.DataFrame): Input dataset with 'bvp' and 'acc_mag' columns.
-        
-        Returns:
-            pd.DataFrame: Dataset with cleaned 'bvp_cleaned' column.
-        """
-        # Precompute motion bursts once
-        motion_bursts = self.motion_artifact_detector.detect_motion_bursts(dataset)
-        
-        # Split into 5-second windows (150 samples @30Hz)
-        window_size = 150
-        windows = [dataset.iloc[i:i+window_size] for i in range(0, len(dataset), window_size)]
-        
-        # Process windows in parallel
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor() as executor:
-            with tqdm(total=len(windows)) as pbar:
-                results = list(executor.map(self._process_window, windows))
-                for _ in results:
-                    pbar.update()
-        
-        return pd.concat(results)
+        # Remove windowed processing and threading
+        dataset = self._process_entire_dataset(dataset)
+        return dataset
 
-    def _process_window(self, window: pd.DataFrame) -> pd.DataFrame:
-        # Reset index to ensure unique row identifiers
-        window = window.reset_index(drop=True)
-
-        # Compute and normalize accelerometer magnitude
-        window['acc_mag'] = np.sqrt(window['acc_x']**2 + window['acc_y']**2 + window['acc_z']**2)
-        window['acc_mag'] = self._robust_normalize(window['acc_mag'].values)
+    def _process_entire_dataset(self, dataset: pd.DataFrame) -> pd.DataFrame:
+        # Add chunked processing
+        chunk_size = 10000  # Process 10k samples at a time
+        total_samples = len(dataset)
         
-        # Detect motion artifacts
-        window = self.motion_artifact_detector.detect_motion_bursts(window)
-
-        # Apply LMS adaptive filtering
-        bvp_cleaned = self.adaptive_filter.apply_adaptive_filter(
-            noisy_signal=window['bvp'].values,
-            reference_signal=window['acc_mag'].values,
-            motion_burst=window['motion_burst'].values
-        )
-        if np.any(np.isnan(bvp_cleaned)):
-            raise ValueError("Adaptive filtering produced NaNs")
+        # Pre-process motion detection first
+        dataset = self.motion_artifact_detector.detect_motion_bursts(dataset)
         
-        if np.all(bvp_cleaned == 0):
-            raise ValueError("Adaptive filter output is entirely zero. Check accelerometer normalization.")
-
-        # Apply Kalman filtering
-        bvp_smoothed = self.kalman_filter.apply_kalman_filter(bvp_cleaned, window['motion_burst'].values)
-        if np.any(np.isnan(bvp_smoothed)):
-            raise ValueError("Kalman filtering produced NaNs")
-
-        # Apply wavelet denoising with skin-tone adaptation
-        bvp_denoised = self.wavelet_denoiser.apply_wavelet_denoising(
-            signal=bvp_smoothed,
-            motion_burst=window['motion_burst'].values,
-            skin_tone=window['skin_tone'].iloc[0]
-        )
-        if np.any(np.isnan(bvp_denoised)):
-            raise ValueError("Wavelet denoising produced NaNs")
-
-        # Add cleaned signal to dataset
-        window['bvp_cleaned'] = bvp_denoised
-
-        # Add quality metrics
-        window = self._add_quality_metrics(window)
+        # Process in chunks
+        cleaned_chunks = []
+        for i in range(0, total_samples, chunk_size):
+            chunk = dataset.iloc[i:i+chunk_size]
+            
+            # Adaptive Filter
+            bvp_cleaned = self.adaptive_filter.apply_adaptive_filter(
+                chunk['bvp'].values,
+                chunk['acc_mag'].values,
+                chunk['motion_burst'].values
+            )
+            
+            # Kalman Filter
+            bvp_smoothed = self.kalman_filter.apply_kalman_filter(bvp_cleaned, chunk['motion_burst'].values)
+            
+            # Wavelet Denoising
+            bvp_denoised = self.wavelet_denoiser.apply_wavelet_denoising(
+                bvp_smoothed,
+                chunk['motion_burst'].values,
+                chunk['skin_tone'].iloc[0]
+            )
+            
+            chunk['bvp_cleaned'] = bvp_denoised
+            cleaned_chunks.append(chunk)
         
-        return window
+        return pd.concat(cleaned_chunks)
 
     def _add_quality_metrics(self, dataset: pd.DataFrame) -> pd.DataFrame:
-        """SNR calculation using original signal as reference"""
-        # Extract and validate signals
-        original = dataset['bvp'].values.astype(np.float64)
-        cleaned = dataset['bvp_cleaned'].values.astype(np.float64)
+        # Remove DC offsets before SNR calculation
+        original = dataset['bvp'].values - np.median(dataset['bvp'])
+        cleaned = dataset['bvp_cleaned'].values - np.median(dataset['bvp_cleaned'])
         
-        # 1. Remove NaNs and ensure finite values
-        original = original[np.isfinite(original)]
-        cleaned = cleaned[np.isfinite(cleaned)]
+        # Use cross-correlation alignment
+        corr = np.correlate(original, cleaned, mode='full')
+        delay = corr.argmax() - (len(original) - 1)
         
-        # 2. Match lengths using zero-padding
-        max_len = max(len(original), len(cleaned))
-        original = np.pad(original, (0, max_len - len(original)))
-        cleaned = np.pad(cleaned, (0, max_len - len(cleaned)))
+        # Align signals
+        if delay > 0:
+            aligned_clean = cleaned[delay:]
+            aligned_original = original[:-delay]
+        else:
+            aligned_clean = cleaned[:delay]
+            aligned_original = original[-delay:]
         
-        # 3. Add DTW dimension validation
-        if original.ndim != 1 or cleaned.ndim != 1:
-            raise ValueError(f"Signal dimensions invalid: {original.shape} vs {cleaned.shape}")
-        
-        # 4. Use constrained DTW with length check
-        if len(original) < 10 or len(cleaned) < 10:
-            dataset['snr'] = np.nan
-            return dataset
-        
-        # Replace with downsampled DTW
-        downsample_factor = max(1, len(original) // 1000)  # Keep ~1000 points
-        original_ds = original[::downsample_factor]
-        cleaned_ds = cleaned[::downsample_factor]
-        
-        # Use constrained DTW
-        distance, path = fastdtw(
-            original_ds, 
-            cleaned_ds,
-            radius=5,
-            dist=lambda x,y: abs(x-y)  # Manhattan faster than Euclidean
-        )
-        
-        # Calculate SNR on aligned samples
-        aligned_original = original[np.array([i for i, _ in path])]
-        aligned_cleaned = cleaned[np.array([j for _, j in path])]
-        
+        # Calculate proper SNR
+        noise = aligned_original - aligned_clean
         signal_power = np.mean(aligned_original**2)
-        noise_power = np.mean((aligned_cleaned - aligned_original)**2)
+        noise_power = np.mean(noise**2)
         dataset['snr'] = 10 * np.log10(signal_power / (noise_power + 1e-9))
-        
         return dataset
         
  

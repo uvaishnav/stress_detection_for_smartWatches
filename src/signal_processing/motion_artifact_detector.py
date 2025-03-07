@@ -27,27 +27,18 @@ class MotionArtifactDetector:
         Returns:
             pd.DataFrame: Dataset with an additional 'motion_burst' column.
         """
-        # Remove G-force conversion (data already in Gs)
-        # dataset['acc_x'] = ...  # Comment out conversion
         
-        # Compute magnitude with safety checks
-        dataset['acc_mag'] = np.sqrt(
-            dataset['acc_x']**2 + 
-            dataset['acc_y']**2 + 
-            dataset['acc_z']**2
-        ).clip(upper=20)  # Cap unrealistic values
+        # More realistic threshold (0.2g for subtle motions)
+        acc_threshold = 0.2  # Reduced from 1.5g
+        window_size = int(self.sampling_rate * 1)  # 1-second window
         
-        # Dynamic threshold based on moving percentile
-        window_size = int(self.sampling_rate * 5)  # 5-second window
-        dataset['acc_threshold'] = dataset['acc_mag'].rolling(
-            window=window_size,
-            min_periods=1,
-            center=True
-        ).quantile(0.9)  # 90th percentile
+        dataset['acc_mag'] = np.sqrt(dataset['acc_x']**2 + dataset['acc_y']**2 + dataset['acc_z']**2)
         
-        # Motion score calculation
-        motion_score = (dataset['acc_mag'] - dataset['acc_threshold']).clip(lower=0)
-        max_score = motion_score.rolling(window=window_size).max()
-        dataset['motion_burst'] = (max_score / (max_score.max() + 1e-9)).fillna(0)
+        # Use efficient rolling maximum
+        rolling_max = dataset['acc_mag'].rolling(window=window_size, min_periods=1, center=True).max()
+        
+        # Dynamic threshold based on baseline
+        baseline = dataset['acc_mag'].quantile(0.95)  # 95th percentile as baseline
+        dataset['motion_burst'] = (rolling_max > (baseline * 1.5)).astype(float)
         
         return dataset
