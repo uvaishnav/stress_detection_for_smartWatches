@@ -28,17 +28,20 @@ class MotionArtifactDetector:
             pd.DataFrame: Dataset with an additional 'motion_burst' column.
         """
         
-        # More realistic threshold (0.2g for subtle motions)
-        acc_threshold = 0.2  # Reduced from 1.5g
-        window_size = int(self.sampling_rate * 1)  # 1-second window
+        # 1. Add G-force conversion (critical fix)
+        dataset['acc_x'] = dataset['acc_x'] / 16384  # ±8g range
+        dataset['acc_y'] = dataset['acc_y'] / 16384
+        dataset['acc_z'] = dataset['acc_z'] / 16384
         
+        # 2. Hybrid approach combining both methods
         dataset['acc_mag'] = np.sqrt(dataset['acc_x']**2 + dataset['acc_y']**2 + dataset['acc_z']**2)
         
-        # Use efficient rolling maximum
-        rolling_max = dataset['acc_mag'].rolling(window=window_size, min_periods=1, center=True).max()
+        # Dynamic threshold (5s window 95th percentile)
+        window_size = int(self.sampling_rate * 5)
+        rolling_q95 = dataset['acc_mag'].rolling(window=window_size, min_periods=1, center=True).quantile(0.95)
         
-        # Dynamic threshold based on baseline
-        baseline = dataset['acc_mag'].quantile(0.95)  # 95th percentile as baseline
-        dataset['motion_burst'] = (rolling_max > (baseline * 1.5)).astype(float)
+        # Motion score with hysteresis
+        motion_score = (dataset['acc_mag'] > rolling_q95 * 1.2).astype(float)
+        dataset['motion_burst'] = motion_score.rolling(window=window_size, min_periods=1).mean()
         
         return dataset

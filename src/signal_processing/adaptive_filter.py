@@ -5,7 +5,7 @@ from scipy import signal
 logging.basicConfig(level=logging.INFO)
 
 class AdaptiveFilter:
-    def __init__(self, learning_rate: float = 0.01, filter_length: int = 10):
+    def __init__(self, learning_rate: float = 0.001, filter_length: int = 20):
         """
         Initialize the adaptive LMS filter.
         

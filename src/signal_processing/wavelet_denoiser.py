@@ -91,19 +91,3 @@ class WaveletDenoiser:
         
         return np.nan_to_num(denoised_signal, nan=0.0)
 
-    def _add_quality_metrics(self, dataset: pd.DataFrame) -> pd.DataFrame:
-        # Ensure 1D input with type conversion
-        original = dataset['bvp'].values.astype(np.float64).ravel()
-        cleaned = dataset['bvp_cleaned'].values.astype(np.float64).ravel()
-        
-        # Length matching with zero-padding
-        max_len = max(len(original), len(cleaned))
-        original = np.pad(original, (0, max_len - len(original)))
-        cleaned = np.pad(cleaned, (0, max_len - len(cleaned)))
-        
-        # Add DTW dimension check
-        if original.ndim != 1 or cleaned.ndim != 1:
-            raise ValueError(f"Invalid signal dimensions: {original.shape} vs {cleaned.shape}")
-        
-        distance, path = fastdtw(original, cleaned, radius=5, dist=euclidean)
-        # ... rest of SNR calculation ...
