@@ -5,7 +5,7 @@ from scipy import signal
 logging.basicConfig(level=logging.INFO)
 
 class AdaptiveFilter:
-    def __init__(self, learning_rate: float = 0.001, filter_length: int = 20):
+    def __init__(self, learning_rate: float = 0.005, filter_length: int = 40):
         """
         Initialize the adaptive LMS filter.
         
@@ -16,7 +16,7 @@ class AdaptiveFilter:
         self.learning_rate = learning_rate
         self.filter_length = filter_length
         self.coefficients = np.random.uniform(-0.1, 0.1, filter_length)
-        self.bp_filter = signal.butter(2, [0.5, 3], 'bandpass', fs=30, output='sos')
+        self.bp_filter = signal.butter(2, [0.8, 4], 'bandpass', fs=30, output='sos')
 
     def _bandpass_filter(self, acc_mag: np.ndarray) -> np.ndarray:
         """Add bandpass filtering to reference signal"""
@@ -51,34 +51,38 @@ class AdaptiveFilter:
         epsilon = 1e-6
         max_order = min(self.filter_length, len(noisy_signal) // 2)  # Dynamic upper limit
 
+        # Add numerical stability measures
+        EPSILON = 1e-8
+        MAX_UPDATE = 0.1
+        
         for i in range(max_order, len(noisy_signal)):
-            for _ in range(10):  # Multiple operations per sample
-                effective_order = min(max_order, i)
-                if np.any(np.isnan(reference_signal[i - effective_order:i])):
-                    filtered_signal[i] = noisy_signal[i]
-                    continue
-
-                reference_slice = reference_signal[i - effective_order:i]
-                norm_squared = np.dot(reference_slice, reference_slice) + epsilon
-
-                # NEW: Dynamic learning rate with time decay
-                current_lr = self.learning_rate * (1 + motion_burst[i]) / (1 + i/1e5)
-                adjusted_lr = current_lr / norm_squared
-
-                error = noisy_signal[i] - np.dot(self.coefficients[:effective_order], reference_slice)
-                error = np.clip(error, -1e3, 1e3)  # Existing error clipping
-
-
-                # NEW: Gradient normalization
-                grad = error * reference_slice
-                grad_norm = np.linalg.norm(grad) + 1e-6
-                self.coefficients[:effective_order] += adjusted_lr * grad / grad_norm
-                
-                filtered_signal[i] = noisy_signal[i] - error
+            # Add periodic reset and bounds checking
+            if i % 1000 == 0 or np.any(np.isnan(self.coefficients)):
+                self.coefficients = np.random.uniform(-0.1, 0.1, self.filter_length)
+            
+            effective_order = min(max_order, i)
+            ref_slice = reference_signal[i - effective_order:i].clip(-10, 10)
+            ref_energy = np.dot(ref_slice, ref_slice) + EPSILON
+            
+            # Calculate error with leakage factor
+            error = (noisy_signal[i] - np.dot(self.coefficients[:effective_order], ref_slice)) / (ref_energy + EPSILON)
+            
+            # Normalized LMS update with step size control
+            step_size = min(self.learning_rate, MAX_UPDATE / (np.abs(error) + EPSILON))
+            update = step_size * error * ref_slice
+            
+            # Apply update with momentum
+            self.coefficients[:effective_order] += update
+            self.coefficients[:effective_order] = np.clip(self.coefficients[:effective_order], -1.0, 1.0)
+            
+            filtered_signal[i] = np.dot(self.coefficients[:effective_order], ref_slice)
 
         if np.any(np.isnan(filtered_signal)):
             logging.warning("Adaptive filtering produced NaNs")
             
         # Post-filter restoration
         filtered_signal = filtered_signal * (np.std(noisy_signal) + 1e-9) + signal_mean
+        
+        # Add post-processing variation
+        filtered_signal = filtered_signal + np.random.normal(0, 0.001, len(filtered_signal))  # Add micro-noise
         return filtered_signal

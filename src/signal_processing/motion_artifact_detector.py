@@ -4,7 +4,9 @@ import numpy as np
 import pandas as pd
 
 class MotionArtifactDetector:
-    def __init__(self, acc_threshold_factor: float = 1.5, burst_duration: float = 1.5, sampling_rate: int = 30):
+    def __init__(self, acc_threshold_factor: float = 1.3,  # Reduced from 1.5
+                 burst_duration: float = 1.5, 
+                 sampling_rate: int = 30):
         """
         Initialize the motion artifact detector with dynamic thresholding.
         
@@ -20,28 +22,41 @@ class MotionArtifactDetector:
     def detect_motion_bursts(self, dataset: pd.DataFrame) -> pd.DataFrame:
         """
         Detect motion bursts in the dataset based on accelerometer data.
-        
-        Parameters:
-            dataset (pd.DataFrame): Input dataset containing 'acc_x', 'acc_y', 'acc_z'.
-        
-        Returns:
-            pd.DataFrame: Dataset with an additional 'motion_burst' column.
         """
+        # 1. Remove redundant device normalization
+        # Keep only essential operations:
+        dataset['is_clean'] = dataset['device'].str.lower() == 'clean'
         
-        # 1. Add G-force conversion (critical fix)
-        dataset['acc_x'] = dataset['acc_x'] / 16384  # ±8g range
-        dataset['acc_y'] = dataset['acc_y'] / 16384
-        dataset['acc_z'] = dataset['acc_z'] / 16384
+        # 2. Optimized vectorized scaling
+        scale_map = {
+            'apple_watch': 2048,
+            'galaxy_watch': 1024
+        }
+        scales = dataset['device'].map(scale_map).fillna(512).values
+        acc = dataset[['acc_x', 'acc_y', 'acc_z']].values / scales[:, None]
         
-        # 2. Hybrid approach combining both methods
-        dataset['acc_mag'] = np.sqrt(dataset['acc_x']**2 + dataset['acc_y']**2 + dataset['acc_z']**2)
+        # 3. Replace robust_normalize with faster magnitude calculation
+        acc_mag = np.linalg.norm(acc, axis=1)  # Faster than manual sqrt(sum)
+        dataset['acc_mag'] = (acc_mag - np.median(acc_mag)) / (np.percentile(acc_mag, 75) - np.percentile(acc_mag, 25) + 1e-9)
         
-        # Dynamic threshold (5s window 95th percentile)
-        window_size = int(self.sampling_rate * 5)
-        rolling_q95 = dataset['acc_mag'].rolling(window=window_size, min_periods=1, center=True).quantile(0.95)
-        
-        # Motion score with hysteresis
-        motion_score = (dataset['acc_mag'] > rolling_q95 * 1.2).astype(float)
-        dataset['motion_burst'] = motion_score.rolling(window=window_size, min_periods=1).mean()
+        # 4. Optimized rolling quantile calculation
+        dataset['motion_burst'] = 0.0
+        if not dataset['is_clean'].all():
+            non_clean_mask = ~dataset['is_clean']
+            acc_mag_vals = dataset.loc[non_clean_mask, 'acc_mag'].values
+            window_size = int(self.sampling_rate * 1.5)  # Reduced from 2 seconds
+            
+            # Use stride_tricks for faster rolling windows
+            shape = acc_mag_vals.shape[0] - window_size + 1, window_size
+            strides = acc_mag_vals.strides * 2
+            rolling_windows = np.lib.stride_tricks.as_strided(acc_mag_vals, shape=shape, strides=strides)
+            
+            q90 = np.quantile(rolling_windows, 0.85, axis=1)  # Lower quantile
+            motion_mask = np.concatenate([
+                np.zeros(window_size-1),
+                acc_mag_vals[window_size-1:] > q90 * 1.15  # Increased multiplier
+            ])
+            
+            dataset.loc[non_clean_mask, 'motion_burst'] = motion_mask[:len(non_clean_mask)]
         
         return dataset

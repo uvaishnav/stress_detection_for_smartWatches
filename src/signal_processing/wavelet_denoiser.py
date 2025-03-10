@@ -74,8 +74,8 @@ class WaveletDenoiser:
         for i in range(1, len(coeffs)):
             burst_window = motion_burst[max(0, len(motion_burst) - len(coeffs[i])):]
             motion_factor = np.mean(burst_window) if len(burst_window) > 0 else 0
-            base_thresh = sigma * np.sqrt(2 * np.log(len(signal)))
-            coeffs[i] = self._threshold(coeffs[i], method) * (1 + motion_factor)
+            base_thresh = sigma * np.sqrt(2 * np.log(len(signal))) * 2  # Added multiplier
+            coeffs[i] = self._threshold(coeffs[i], method) * 0.8  # Force 20% reduction
             
         try:
             # Reconstruct the denoised signal from the thresholded coefficients

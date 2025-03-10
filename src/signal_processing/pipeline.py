@@ -31,6 +31,8 @@ class SignalProcessingPipeline:
         self.kalman_filter = KalmanFilter(process_noise=process_noise, measurement_noise=measurement_noise)
         self.wavelet_denoiser = WaveletDenoiser()
         self.motion_artifact_detector = MotionArtifactDetector()
+        self.adaptive_filter_state = None
+        self.kalman_filter_state = None
 
     def _robust_normalize(self, data: np.ndarray) -> np.ndarray:
         """Enhanced normalization with fallback"""
@@ -64,7 +66,14 @@ class SignalProcessingPipeline:
         # Process in chunks
         cleaned_chunks = []
         for i in range(0, total_samples, chunk_size):
-            chunk = dataset.iloc[i:i+chunk_size]
+            # Create explicit copy of the chunk
+            chunk = dataset.iloc[i:i+chunk_size].copy()
+            
+            # Fix: Check if state exists using 'is not None'
+            if self.adaptive_filter_state is not None:
+                self.adaptive_filter.coefficients = self.adaptive_filter_state
+            if self.kalman_filter_state is not None:
+                self.kalman_filter.__dict__.update(self.kalman_filter_state)
             
             # Adaptive Filter
             bvp_cleaned = self.adaptive_filter.apply_adaptive_filter(
@@ -83,31 +92,21 @@ class SignalProcessingPipeline:
                 chunk['skin_tone'].iloc[0]
             )
             
-            chunk['bvp_cleaned'] = bvp_denoised
+            # Modify the copy directly
+            chunk.loc[:, 'bvp_cleaned'] = bvp_denoised
             cleaned_chunks.append(chunk)
+            
+            # Save states
+            self.adaptive_filter_state = self.adaptive_filter.coefficients.copy()
+            self.kalman_filter_state = self.kalman_filter.__dict__.copy()
         
         return pd.concat(cleaned_chunks)
 
     def _add_quality_metrics(self, dataset: pd.DataFrame) -> pd.DataFrame:
-        # Remove DC offsets before SNR calculation
-        original = dataset['bvp'].values - np.median(dataset['bvp'])
-        cleaned = dataset['bvp_cleaned'].values - np.median(dataset['bvp_cleaned'])
-        
-        # Use cross-correlation alignment
-        corr = np.correlate(original, cleaned, mode='full')
-        delay = corr.argmax() - (len(original) - 1)
-        
-        # Align signals
-        if delay > 0:
-            aligned_clean = cleaned[delay:]
-            aligned_original = original[:-delay]
-        else:
-            aligned_clean = cleaned[:delay]
-            aligned_original = original[-delay:]
-        
-        # Calculate proper SNR
-        noise = aligned_original - aligned_clean
-        signal_power = np.mean(aligned_original**2)
+        # Use proper aligned SNR calculation
+        aligned_clean, aligned_orig = self._align_signals(dataset['bvp_cleaned'], dataset['bvp'])
+        noise = aligned_orig - aligned_clean
+        signal_power = np.mean(aligned_orig**2)
         noise_power = np.mean(noise**2)
         dataset['snr'] = 10 * np.log10(signal_power / (noise_power + 1e-9))
         return dataset

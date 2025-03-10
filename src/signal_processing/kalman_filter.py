@@ -13,7 +13,7 @@ class KalmanFilter:
             measurement_noise (float): Measurement noise covariance (R)
         """
         self.state = initial_state if initial_state != 0 else 0.01  # Prevent zero lock
-        self.error_covariance = 1.0  # Increased from 1e-3
+        self.error_covariance = 0.1  # Reduced from 1.0
         self.process_noise = process_noise
         self.measurement_noise = measurement_noise
 
@@ -57,15 +57,13 @@ class KalmanFilter:
             np.ndarray: Filtered signal
         """
         smoothed_signal = np.zeros_like(signal)
+        self.state = signal[0] if len(signal) > 0 else 0.01
+        self.error_covariance = 0.1
         
-        # Initialize with first valid measurement
-        if len(signal) > 0 and not np.isnan(signal[0]):
-            self.state = signal[0]
-            
         for i, measurement in enumerate(signal):
-            smoothed_signal[i] = self.update(
-                measurement, 
-                motion_burst=motion_burst[i] if i < len(motion_burst) else False
-            )
-            
+            if motion_burst[i]:
+                # Modified: Partial reset instead of full measurement adoption
+                self.state = 0.7 * self.state + 0.3 * measurement
+                self.error_covariance *= 1.2
+            smoothed_signal[i] = self.update(measurement, motion_burst[i])
         return smoothed_signal
