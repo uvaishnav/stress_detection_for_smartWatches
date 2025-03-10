@@ -2,9 +2,11 @@
 
 import numpy as np
 import pandas as pd
+import logging
+from numpy.lib.stride_tricks import sliding_window_view
 
 class MotionArtifactDetector:
-    def __init__(self, acc_threshold_factor: float = 1.3,  # Reduced from 1.5
+    def __init__(self, acc_threshold_factor: float = 1.3,
                  burst_duration: float = 1.5, 
                  sampling_rate: int = 30):
         """
@@ -18,45 +20,44 @@ class MotionArtifactDetector:
         self.acc_threshold_factor = acc_threshold_factor
         self.burst_duration = burst_duration
         self.sampling_rate = sampling_rate
+        self.window_size = int(sampling_rate * 1.5)  # 1.5 second window
 
     def detect_motion_bursts(self, dataset: pd.DataFrame) -> pd.DataFrame:
-        """
-        Detect motion bursts in the dataset based on accelerometer data.
-        """
-        # 1. Remove redundant device normalization
-        # Keep only essential operations:
-        dataset['is_clean'] = dataset['device'].str.lower() == 'clean'
-        
-        # 2. Optimized vectorized scaling
-        scale_map = {
+        # Device-aware accelerometer normalization
+        device_scales = {
             'apple_watch': 2048,
             'galaxy_watch': 1024
         }
-        scales = dataset['device'].map(scale_map).fillna(512).values
+        scales = dataset['device'].str.lower().map(device_scales).fillna(512).values
         acc = dataset[['acc_x', 'acc_y', 'acc_z']].values / scales[:, None]
         
-        # 3. Replace robust_normalize with faster magnitude calculation
-        acc_mag = np.linalg.norm(acc, axis=1)  # Faster than manual sqrt(sum)
-        dataset['acc_mag'] = (acc_mag - np.median(acc_mag)) / (np.percentile(acc_mag, 75) - np.percentile(acc_mag, 25) + 1e-9)
+        # Noise-adaptive magnitude calculation
+        acc_mag = np.linalg.norm(acc, axis=1)
+        iqr = np.percentile(acc_mag, 75) - np.percentile(acc_mag, 25)
+        dataset['acc_mag'] = (acc_mag - np.median(acc_mag)) / (iqr + 1e-9)
         
-        # 4. Optimized rolling quantile calculation
-        dataset['motion_burst'] = 0.0
-        if not dataset['is_clean'].all():
-            non_clean_mask = ~dataset['is_clean']
-            acc_mag_vals = dataset.loc[non_clean_mask, 'acc_mag'].values
-            window_size = int(self.sampling_rate * 1.5)  # Reduced from 2 seconds
-            
-            # Use stride_tricks for faster rolling windows
-            shape = acc_mag_vals.shape[0] - window_size + 1, window_size
-            strides = acc_mag_vals.strides * 2
-            rolling_windows = np.lib.stride_tricks.as_strided(acc_mag_vals, shape=shape, strides=strides)
-            
-            q90 = np.quantile(rolling_windows, 0.85, axis=1)  # Lower quantile
-            motion_mask = np.concatenate([
-                np.zeros(window_size-1),
-                acc_mag_vals[window_size-1:] > q90 * 1.15  # Increased multiplier
-            ])
-            
-            dataset.loc[non_clean_mask, 'motion_burst'] = motion_mask[:len(non_clean_mask)]
+        # Improved noise-adaptive threshold
+        dynamic_threshold = (
+            np.median(acc_mag) + 
+            1.2*np.std(acc_mag) * (1 + dataset['noise_level'].values)
+        )
         
+        # State machine with persistence
+        motion_state = np.zeros(len(dataset))
+        in_burst = False
+        for i in range(1, len(dataset)):
+            # Use .iloc for position-based indexing
+            current_noise = dataset['noise_level'].iloc[i]
+            current_threshold = dynamic_threshold[i]
+            
+            if acc_mag[i] > current_threshold * (1 + 0.3*current_noise):
+                motion_state[i] = min(motion_state[i-1] + 0.2, 1.0)
+                in_burst = True
+            elif in_burst and (acc_mag[i] > 0.7*current_threshold):
+                motion_state[i] = max(motion_state[i-1] - 0.05, 0.4)
+            else:
+                motion_state[i] = max(motion_state[i-1] - 0.1, 0.0)
+                in_burst = False
+        
+        dataset['motion_burst'] = np.round(motion_state, 2)
         return dataset

@@ -16,54 +16,59 @@ class KalmanFilter:
         self.error_covariance = 0.1  # Reduced from 1.0
         self.process_noise = process_noise
         self.measurement_noise = measurement_noise
+        self.prev_innovations = []
+        self.prev_states = []
 
     def update(self, measurement: float, motion_burst: bool = False) -> float:
-        """
-        Update the Kalman filter state with motion-aware adjustments
+        # Motion-aware noise adaptation
+        if motion_burst:
+            self.process_noise = 1e-2  # Allow more fluctuation during motion
+            measurement_weight = 0.2  # Trust measurements less
+        else:
+            self.process_noise = 1e-4  # Tight filter during clean periods
+            measurement_weight = 0.8
         
-        Parameters:
-            measurement (float): New measurement value
-            motion_burst (bool): Indicates motion artifact presence
-            
-        Returns:
-            float: Updated state estimate
-        """
-        if np.isnan(measurement):
-            return self.state  # Maintain current state for invalid measurements
-
-        # Adjust measurement noise during motion bursts
-        adjusted_measurement_noise = self.measurement_noise * (1 + 2 * int(motion_burst))
-
-        # Prediction step
+        # Prediction
         predicted_state = self.state
-        predicted_error_covariance = self.error_covariance + self.process_noise
-
-        # Update step
-        kalman_gain = predicted_error_covariance / (predicted_error_covariance + adjusted_measurement_noise)
-        self.state = predicted_state + kalman_gain * (measurement - predicted_state)
-        self.error_covariance = (1 - kalman_gain) * predicted_error_covariance
-
-        return self.state
+        predicted_error = self.error_covariance + self.process_noise
+        
+        # Update
+        innovation = measurement - predicted_state
+        kalman_gain = predicted_error / (predicted_error + self.measurement_noise)
+        
+        # Motion-aware innovation clamping
+        max_innovation = 0.5 + 2.0*motion_burst
+        innovation = np.clip(innovation, -max_innovation, max_innovation)
+        
+        # Physiological plausibility check with empty list handling
+        if len(self.prev_innovations) >= 2:  # Require minimum 2 samples
+            innov_threshold = 2.0 * np.nanmedian(np.abs(self.prev_innovations[-10:]))
+            if abs(innovation) > innov_threshold:
+                innovation *= 0.3
+        else:
+            innov_threshold = np.inf  # No thresholding until sufficient history
+        
+        self.state = predicted_state + kalman_gain * innovation * measurement_weight
+        self.error_covariance = (1 - kalman_gain) * predicted_error
+        
+        # Post-update smoothing with empty list handling
+        if len(self.prev_states) >= 3:  # Minimum 3 samples for median
+            state_smooth = 0.7*self.state + 0.3*np.nanmedian(self.prev_states[-5:])
+        else:
+            state_smooth = self.state
+        
+        # Maintain bounded history
+        self.prev_innovations = self.prev_innovations[-100:]  # Keep last 100 innovations
+        self.prev_states = self.prev_states[-50:]  # Keep last 50 states
+        
+        return np.clip(state_smooth, 0, None)
 
     def apply_kalman_filter(self, signal: np.ndarray, motion_burst: np.ndarray) -> np.ndarray:
-        """
-        Apply the Kalman filter to an entire signal with motion awareness
-        
-        Parameters:
-            signal (np.ndarray): Input signal to filter
-            motion_burst (np.ndarray): Motion artifact indicators
-            
-        Returns:
-            np.ndarray: Filtered signal
-        """
-        smoothed_signal = np.zeros_like(signal)
-        self.state = signal[0] if len(signal) > 0 else 0.01
-        self.error_covariance = 0.1
-        
-        for i, measurement in enumerate(signal):
-            if motion_burst[i]:
-                # Modified: Partial reset instead of full measurement adoption
-                self.state = 0.7 * self.state + 0.3 * measurement
-                self.error_covariance *= 1.2
-            smoothed_signal[i] = self.update(measurement, motion_burst[i])
-        return smoothed_signal
+        filtered = np.zeros_like(signal)
+        for i in range(len(signal)):
+            filtered[i] = self.update(signal[i], motion_burst[i])
+            # Maintain physiological constraints
+            if i > 10:
+                avg = np.mean(filtered[i-5:i])
+                filtered[i] = 0.7*filtered[i] + 0.3*avg
+        return filtered
