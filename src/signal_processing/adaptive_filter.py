@@ -64,9 +64,8 @@ class AdaptiveFilter:
         freq_signal = np.fft.fft(noisy_signal)
         freq_reference = np.fft.fft(reference_signal)
         
-        # Spectral subtraction with adaptive floor
-        clean_spectrum = freq_signal - 0.7*freq_reference
-        clean_spectrum *= (np.abs(clean_spectrum) > 0.2*np.max(np.abs(freq_signal)))
+        # Phase-preserving spectral subtraction
+        clean_spectrum = np.abs(freq_signal) * np.exp(1j*np.angle(freq_signal)) - 0.1*freq_reference
         
         filtered_signal = np.zeros_like(noisy_signal)
         dc_offset = np.median(noisy_signal)  # Capture DC offset before filtering
@@ -131,13 +130,13 @@ class AdaptiveFilter:
         noise_level = np.sqrt(np.mean(reference_signal**2))  # RMS of reference signal
         
         # Stabilized learning rate using calculated noise level
-        base_lr = np.clip(0.1 / (1 + 5*noise_level), 0.001, 0.1)
+        base_lr = np.clip(0.05 / (1 + 2*noise_level), 0.005, 0.05)  # Less aggressive
         self.learning_rate = base_lr * (1 + 0.5*np.mean(motion_burst))
         
         # Physiological envelope constraint
         signal_envelope = np.abs(signal.hilbert(noisy_signal))
         for i in range(len(filtered_signal)):
-            if filtered_signal[i] > 1.5*signal_envelope[i]:
-                filtered_signal[i] = 0.8*filtered_signal[i] + 0.2*signal_envelope[i]
+            if filtered_signal[i] > 3.0*signal_envelope[i]:  # From 2.0→3.0
+                filtered_signal[i] = 0.95*filtered_signal[i] + 0.05*signal_envelope[i]
         
         return filtered_signal

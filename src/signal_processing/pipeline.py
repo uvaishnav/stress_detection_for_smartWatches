@@ -141,40 +141,11 @@ class SignalProcessingPipeline:
             return current_signal
             
         prev_signal = prev_chunks[-1]['bvp_cleaned'].values
-        overlap = min(500, len(current_signal), len(prev_signal))
         
-        # Handle edge cases with insufficient overlap
-        if overlap < 10:  # Minimum overlap threshold
-            return current_signal
+        # Replace manual blending with phase-aware method
+        blended_signal = self._phase_aware_blend(current_signal, prev_signal)
         
-        try:
-            # Phase-aware alignment with bounds checking
-            corr = np.correlate(prev_signal[-overlap:], current_signal[:overlap], mode='valid')
-            if len(corr) == 0:
-                return current_signal
-            shift = np.argmax(corr) - overlap//2
-        except ValueError:
-            shift = 0
-
-        # Calculate safe indices with length validation
-        start_idx = max(0, len(prev_signal) - overlap - shift)
-        end_idx = min(len(prev_signal), len(prev_signal) - shift)  # Clamp to signal length
-        valid_blend_length = end_idx - start_idx
-        
-        # Ensure matching dimensions for blending
-        if valid_blend_length <= 0:
-            return current_signal
-        
-        # Create properly sized blend window
-        blend_window = np.linspace(0, 1, valid_blend_length)
-        
-        # Perform dimensionally safe blending
-        current_signal[:valid_blend_length] = (
-            (1 - blend_window) * prev_signal[start_idx:end_idx] +
-            blend_window * current_signal[:valid_blend_length]
-        )
-        
-        return current_signal
+        return blended_signal
 
     def _add_quality_metrics(self, dataset: pd.DataFrame) -> pd.DataFrame:
         # Use proper aligned SNR calculation
@@ -241,3 +212,40 @@ class SignalProcessingPipeline:
         
         # 5. Match original signal properties
         return enhanced * np.std(signal) + np.mean(signal)
+
+    def _phase_aware_blend(self, current_signal: np.ndarray, prev_signal: np.ndarray) -> np.ndarray:
+        """Phase-aware blending between current and previous signal"""
+        overlap = min(500, len(current_signal), len(prev_signal))
+        
+        # Handle edge cases with insufficient overlap
+        if overlap < 10:  # Minimum overlap threshold
+            return current_signal
+        
+        try:
+            # Phase-aware alignment with bounds checking
+            corr = np.correlate(prev_signal[-overlap:], current_signal[:overlap], mode='valid')
+            if len(corr) == 0:
+                return current_signal
+            shift = np.argmax(corr) - overlap//2
+        except ValueError:
+            shift = 0
+
+        # Calculate safe indices with length validation
+        start_idx = max(0, len(prev_signal) - overlap - shift)
+        end_idx = min(len(prev_signal), len(prev_signal) - shift)  # Clamp to signal length
+        valid_blend_length = end_idx - start_idx
+        
+        # Ensure matching dimensions for blending
+        if valid_blend_length <= 0:
+            return current_signal
+        
+        # Create properly sized blend window
+        blend_window = np.linspace(0, 1, valid_blend_length)
+        
+        # Perform phase-aware blending
+        current_signal[:valid_blend_length] = (
+            (1 - blend_window) * prev_signal[start_idx:end_idx] +
+            blend_window * current_signal[:valid_blend_length]
+        )
+        
+        return current_signal

@@ -23,10 +23,10 @@ class KalmanFilter:
         # Motion-aware noise adaptation
         if motion_burst:
             self.process_noise = 1e-2  # Allow more fluctuation during motion
-            measurement_weight = 0.2  # Trust measurements less
+            measurement_weight = 0.8  # Trust measurements more during motion
         else:
             self.process_noise = 1e-4  # Tight filter during clean periods
-            measurement_weight = 0.8
+            measurement_weight = 0.2  # Trust model more during clean periods
         
         # Prediction
         predicted_state = self.state
@@ -36,8 +36,8 @@ class KalmanFilter:
         innovation = measurement - predicted_state
         kalman_gain = predicted_error / (predicted_error + self.measurement_noise)
         
-        # Motion-aware innovation clamping
-        max_innovation = 0.5 + 2.0*motion_burst
+        # Dynamic innovation limits
+        max_innovation = 2.0 * (1 + motion_burst)  # From 1.0→2.0
         innovation = np.clip(innovation, -max_innovation, max_innovation)
         
         # Physiological plausibility check with empty list handling
@@ -53,7 +53,7 @@ class KalmanFilter:
         
         # Post-update smoothing with empty list handling
         if len(self.prev_states) >= 3:  # Minimum 3 samples for median
-            state_smooth = 0.7*self.state + 0.3*np.nanmedian(self.prev_states[-5:])
+            state_smooth = 0.9*self.state + 0.1*np.nanmedian(self.prev_states[-5:])
         else:
             state_smooth = self.state
         
@@ -70,5 +70,5 @@ class KalmanFilter:
             # Maintain physiological constraints
             if i > 10:
                 avg = np.mean(filtered[i-5:i])
-                filtered[i] = 0.7*filtered[i] + 0.3*avg
+                filtered[i] = 0.9*filtered[i] + 0.1*avg
         return filtered

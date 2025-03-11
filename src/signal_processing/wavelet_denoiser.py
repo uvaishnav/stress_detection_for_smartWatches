@@ -67,7 +67,7 @@ class WaveletDenoiser:
 
         # Enhanced noise estimation
         noise_est = np.mean([np.median(np.abs(c)) / 0.6745 for c in coeffs[1:]])
-        threshold_factor = 1.5 - 0.8*noise_level + 0.3*(skin_tone in ['V-VI'])
+        threshold_factor = 1.2 - 0.6*noise_level
         
         # Adaptive motion masking
         motion_mask = np.clip(motion_burst * (1 + 0.5*noise_level), 0, 0.9)
@@ -75,7 +75,7 @@ class WaveletDenoiser:
         # Frequency-dependent thresholding
         for i in range(1, len(coeffs)):
             scale_factor = 1.0 / (1 + np.exp(-i))  # Less aggressive at higher frequencies
-            coeffs[i] = pywt.threshold(coeffs[i], threshold_factor*noise_est*scale_factor, 'soft')
+            coeffs[i] = self._threshold(coeffs[i], method='universal')
         
         try:
             # Reconstruct the denoised signal from the thresholded coefficients
@@ -93,13 +93,11 @@ class WaveletDenoiser:
         threshold_scale = 1 + 2*noise_level  # More aggressive thresholding for noisier signals
         
         # Motion-aware denoising
-        denoised = (1 - motion_mask)*denoised + motion_mask*signal  # Preserve signal during motion
+        denoised = (1 - motion_mask)*denoised + 0.3*motion_mask*signal  # Reduced from 1.0
         
         # Skin-tone specific frequency emphasis
-        if skin_tone in ['V-VI']:
-            denoised = self._enhance_low_frequencies(denoised)
-        else:
-            denoised = self._enhance_high_frequencies(denoised)
+        cutoff = 0.6 if skin_tone in ['V-VI'] else 0.4  # 6Hz max
+        denoised = self._enhance_low_frequencies(denoised)
         
         return np.nan_to_num(denoised, nan=0.0)
 
@@ -111,7 +109,7 @@ class WaveletDenoiser:
         freq = np.fft.rfftfreq(len(signal))
         
         # Create a low-frequency emphasis filter
-        cutoff = 0.1  # 10% of Nyquist frequency
+        cutoff = 0.25  # Increased from 0.1
         lpf = 1 / (1 + (freq/cutoff)**4)
         
         enhanced = np.fft.irfft(fft_signal * lpf, n=len(signal))

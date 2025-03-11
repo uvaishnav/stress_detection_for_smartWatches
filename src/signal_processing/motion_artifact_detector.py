@@ -50,14 +50,13 @@ class MotionArtifactDetector:
             current_noise = dataset['noise_level'].iloc[i]
             current_threshold = dynamic_threshold[i]
             
-            if acc_mag[i] > current_threshold * (1 + 0.3*current_noise):
-                motion_state[i] = min(motion_state[i-1] + 0.2, 1.0)
-                in_burst = True
-            elif in_burst and (acc_mag[i] > 0.7*current_threshold):
-                motion_state[i] = max(motion_state[i-1] - 0.05, 0.4)
+            if acc_mag[i] > current_threshold:
+                motion_state[i] = min(motion_state[i-1] + 0.4, 1.0)  # Faster attack
             else:
-                motion_state[i] = max(motion_state[i-1] - 0.1, 0.0)
-                in_burst = False
+                motion_state[i] = max(motion_state[i-1] - 0.2, 0.0)  # Faster decay
         
-        dataset['motion_burst'] = np.round(motion_state, 2)
+        # Quantize motion states to 0.1 increments
+        motion_state = np.round(motion_state, 1)
+        
+        dataset['motion_burst'] = motion_state
         return dataset
