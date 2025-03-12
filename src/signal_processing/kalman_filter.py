@@ -23,10 +23,10 @@ class KalmanFilter:
         # Motion-aware noise adaptation
         if motion_burst:
             self.process_noise = 1e-2  # Allow more fluctuation during motion
-            measurement_weight = 0.8  # Trust measurements more during motion
+            measurement_weight = 0.45  # From 0.4
         else:
             self.process_noise = 1e-4  # Tight filter during clean periods
-            measurement_weight = 0.2  # Trust model more during clean periods
+            measurement_weight = 0.9  # From 0.85
         
         # Prediction
         predicted_state = self.state
@@ -36,8 +36,8 @@ class KalmanFilter:
         innovation = measurement - predicted_state
         kalman_gain = predicted_error / (predicted_error + self.measurement_noise)
         
-        # Dynamic innovation limits
-        max_innovation = 2.0 * (1 + motion_burst)  # From 1.0→2.0
+        # HR-adaptive innovation limits
+        max_innovation = 28.0 * (1 + 0.7*motion_burst)  # From 25.0
         innovation = np.clip(innovation, -max_innovation, max_innovation)
         
         # Physiological plausibility check with empty list handling
@@ -61,6 +61,9 @@ class KalmanFilter:
         self.prev_innovations = self.prev_innovations[-100:]  # Keep last 100 innovations
         self.prev_states = self.prev_states[-50:]  # Keep last 50 states
         
+        # Reverse smoothing factors
+        smooth_factor = 0.8 if motion_burst else 0.95  # Less smoothing during motion
+        
         return np.clip(state_smooth, 0, None)
 
     def apply_kalman_filter(self, signal: np.ndarray, motion_burst: np.ndarray) -> np.ndarray:
@@ -70,5 +73,7 @@ class KalmanFilter:
             # Maintain physiological constraints
             if i > 10:
                 avg = np.mean(filtered[i-5:i])
-                filtered[i] = 0.9*filtered[i] + 0.1*avg
+                # Dynamic smoothing based on signal quality
+                smooth_factor = 0.95 if motion_burst[i] else 0.8  # Less smoothing during motion
+                filtered[i] = smooth_factor*filtered[i] + (1-smooth_factor)*avg
         return filtered

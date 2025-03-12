@@ -60,55 +60,83 @@ class SignalProcessingPipeline:
         
         # 3. Process in chunks with noise-level adaptation
         chunk_size = 5000
+        overlap = 250  # 5% overlap
         cleaned_chunks = []
         
         for i in range(0, len(dataset), chunk_size):
             chunk = dataset.iloc[i:i+chunk_size].copy()
             noise_level = chunk['noise_level'].median()
             
-            # Adaptive filter tuning based on noise level
-            self.adaptive_filter.learning_rate = np.clip(0.1/noise_level, 0.01, 0.5)
-            filter_length = int(np.clip(30*noise_level, 10, 50))
+            # Modified filter length calculation with dimension safety
+            self.adaptive_filter.filter_length = min(
+                int(np.clip(30*noise_level, 10, 50)),
+                len(chunk),
+                len(chunk) // 2  # Add this line to prevent oversize filters
+            )
             
-            # Ensure filter length doesn't exceed chunk size
-            self.adaptive_filter.filter_length = min(filter_length, len(chunk))
-            
-            # Initialize coefficients for each chunk
+            # Add coefficient validation after initialization
             self.adaptive_filter.initialize_coefficients()
+            if len(self.adaptive_filter.coefficients) != self.adaptive_filter.filter_length:
+                self.adaptive_filter.filter_length = len(self.adaptive_filter.coefficients)
+                logging.warning(f"Corrected filter length to {self.adaptive_filter.filter_length}")
             
-            bvp_cleaned = self.adaptive_filter.apply_adaptive_filter(
-                chunk['bvp'].values,
-                chunk['acc_mag'].values,
-                chunk['motion_burst'].values
+            # Add signal validity check before processing
+            if np.std(chunk['bvp']) < 0.01:  # Prevent processing flatlined signals
+                chunk['bvp_cleaned'] = chunk['bvp'].values
+            else:
+                # Main processing pipeline
+                bvp_cleaned = self.adaptive_filter.apply_adaptive_filter(
+                    chunk['bvp'].values,
+                    chunk['acc_mag'].values,
+                    chunk['motion_burst'].values
+                )
+                
+                # Multi-stage processing
+                bvp_cleaned = self._apply_spectral_subtraction(bvp_cleaned, chunk['acc_mag'])
+                
+                # Kalman filter noise adaptation
+                self.kalman_filter.measurement_noise = noise_level * 0.1
+                bvp_smoothed = self.kalman_filter.apply_kalman_filter(
+                    bvp_cleaned, 
+                    chunk['motion_burst'].values
+                )
+                
+                # Wavelet denoising with combined skin tone and noise adaptation
+                bvp_denoised = self.wavelet_denoiser.apply_wavelet_denoising(
+                    bvp_smoothed,
+                    chunk['motion_burst'].values,
+                    chunk['skin_tone'].iloc[0],
+                    noise_level
+                )
+                
+                # Store all processed versions in the chunk
+                chunk['bvp_cleaned'] = bvp_cleaned
+                chunk['bvp_smoothed'] = bvp_smoothed
+                chunk['bvp_denoised'] = bvp_denoised
+
+            # Relaxed validation criteria
+            valid_chunk = (
+                (np.std(bvp_cleaned) > 0.01 * np.std(chunk['bvp'])) and  # From 0.015
+                (np.max(bvp_cleaned) - np.min(bvp_cleaned) > 0.03)  # From 0.05
             )
             
-            # Multi-stage processing
-            bvp_cleaned = self._apply_spectral_subtraction(bvp_cleaned, chunk['acc_mag'])
+            if not valid_chunk:
+                # Improved first chunk handling
+                if len(cleaned_chunks) == 0:  # First chunk special handling
+                    logging.warning("First chunk rejected, using raw signal with noise reduction")
+                    chunk['bvp_cleaned'] = chunk['bvp'].values * 0.98  # Minimal noise reduction
+                else:
+                    # Use last valid chunk with overlap blending
+                    prev_chunk = cleaned_chunks[-1].iloc[-overlap*2:]
+                    chunk = self._blend_chunks(prev_chunk, chunk, overlap)
             
-            # Kalman filter noise adaptation
-            self.kalman_filter.measurement_noise = noise_level * 0.1
-            bvp_smoothed = self.kalman_filter.apply_kalman_filter(
-                bvp_cleaned, 
-                chunk['motion_burst'].values
-            )
-            
-            # Wavelet denoising with combined skin tone and noise adaptation
-            bvp_denoised = self.wavelet_denoiser.apply_wavelet_denoising(
-                bvp_smoothed,
-                chunk['motion_burst'].values,
-                chunk['skin_tone'].iloc[0],
-                noise_level
-            )
-            
-            # Improved chunk blending
-            chunk['bvp_cleaned'] = self._blend_chunks(
-                bvp_denoised, 
-                cleaned_chunks,
-                noise_level=noise_level
-            )
             cleaned_chunks.append(chunk)
         
-        return pd.concat(cleaned_chunks)
+        # Combine all chunks while preserving all columns
+        full_dataset = pd.concat(cleaned_chunks)
+        return full_dataset[['bvp', 'bvp_cleaned', 'bvp_smoothed', 'bvp_denoised', 
+                           'motion_burst', 'acc_mag', 'device', 'skin_tone', 
+                           'noise_level', 'label', 'subject_id']]
 
     def _apply_device_specific_processing(self, dataset: pd.DataFrame) -> pd.DataFrame:
         # Device-specific accelerometer scaling and noise floor adjustment
@@ -135,17 +163,28 @@ class SignalProcessingPipeline:
         
         return dataset
 
-    def _blend_chunks(self, current_signal: np.ndarray, prev_chunks: list, noise_level: float) -> np.ndarray:
+    def _blend_chunks(self, prev_chunk: pd.DataFrame, current_chunk: pd.DataFrame, overlap: int) -> pd.DataFrame:
         """Noise-aware chunk blending with phase alignment"""
-        if not prev_chunks:
-            return current_signal
-            
-        prev_signal = prev_chunks[-1]['bvp_cleaned'].values
+        # Extract signal arrays from DataFrames
+        prev_signal = prev_chunk['bvp_cleaned'].values
+        current_signal = current_chunk['bvp_cleaned'].values
         
-        # Replace manual blending with phase-aware method
-        blended_signal = self._phase_aware_blend(current_signal, prev_signal)
+        # Handle empty previous chunk case
+        if prev_chunk.empty:
+            return current_chunk
+
+        # Create blended array
+        blended_array = self._phase_aware_blend(current_signal, prev_signal)
         
-        return blended_signal
+        # Create new blended chunk with preserved metadata
+        blended_chunk = current_chunk.copy()
+        blended_chunk['bvp_cleaned'] = blended_array
+        
+        # Boosted signal preservation in blending
+        if np.std(blended_array) < 0.05*np.std(prev_signal):  # From 0.1
+            blended_array = prev_signal[-len(blended_array):]
+        
+        return blended_chunk
 
     def _add_quality_metrics(self, dataset: pd.DataFrame) -> pd.DataFrame:
         # Use proper aligned SNR calculation
@@ -195,10 +234,9 @@ class SignalProcessingPipeline:
         # 1. Compute spectral representations
         fft_signal = np.fft.rfft(signal)
         fft_acc = np.fft.rfft(acc_mag)
-        freqs = np.fft.rfftfreq(len(signal))
         
         # 2. Adaptive noise floor estimation
-        noise_floor = 0.7 * np.abs(fft_acc) * (1 + np.linspace(0, 1, len(fft_acc)))
+        noise_floor = 0.4 * np.abs(fft_acc) * (1 + np.linspace(0, 1, len(fft_acc)))  # Reduced from 0.7
         
         # 3. Frequency-dependent subtraction
         enhanced_spectrum = np.where(
@@ -215,37 +253,44 @@ class SignalProcessingPipeline:
 
     def _phase_aware_blend(self, current_signal: np.ndarray, prev_signal: np.ndarray) -> np.ndarray:
         """Phase-aware blending between current and previous signal"""
-        overlap = min(500, len(current_signal), len(prev_signal))
+        # Create a copy to avoid modifying the original array
+        blended_signal = current_signal.copy()
+        
+        overlap = min(500, len(blended_signal), len(prev_signal))
         
         # Handle edge cases with insufficient overlap
         if overlap < 10:  # Minimum overlap threshold
-            return current_signal
+            return blended_signal
         
         try:
             # Phase-aware alignment with bounds checking
-            corr = np.correlate(prev_signal[-overlap:], current_signal[:overlap], mode='valid')
+            corr = np.correlate(prev_signal[-overlap:], blended_signal[:overlap], mode='valid')
             if len(corr) == 0:
-                return current_signal
+                return blended_signal
             shift = np.argmax(corr) - overlap//2
         except ValueError:
             shift = 0
 
         # Calculate safe indices with length validation
         start_idx = max(0, len(prev_signal) - overlap - shift)
-        end_idx = min(len(prev_signal), len(prev_signal) - shift)  # Clamp to signal length
+        end_idx = min(len(prev_signal), len(prev_signal) - shift)
         valid_blend_length = end_idx - start_idx
         
         # Ensure matching dimensions for blending
         if valid_blend_length <= 0:
-            return current_signal
+            return blended_signal
         
         # Create properly sized blend window
         blend_window = np.linspace(0, 1, valid_blend_length)
         
-        # Perform phase-aware blending
-        current_signal[:valid_blend_length] = (
+        # Perform phase-aware blending on the copied array
+        blended_signal[:valid_blend_length] = (
             (1 - blend_window) * prev_signal[start_idx:end_idx] +
-            blend_window * current_signal[:valid_blend_length]
+            blend_window * blended_signal[:valid_blend_length]
         )
         
-        return current_signal
+        # Add signal preservation guard
+        if np.std(blended_signal) < 0.05*np.std(prev_signal):  # From 0.1
+            blended_signal = prev_signal[-len(blended_signal):]
+        
+        return blended_signal

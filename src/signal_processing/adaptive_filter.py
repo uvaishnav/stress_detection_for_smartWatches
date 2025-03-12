@@ -40,36 +40,35 @@ class AdaptiveFilter:
         Returns:
             np.ndarray: Cleaned PPG signal.
         """
-        logging.info(f"Applying adaptive filtering... Input length: {len(noisy_signal)}")
+        # logging.info(f"Applying adaptive filtering... Input length: {len(noisy_signal)}")
         reference_signal = np.nan_to_num(reference_signal, nan=1e-6)
         reference_signal = self._bandpass_filter(reference_signal)  # Add bandpass
         
-        # Add signal preservation guard
-        if np.all(noisy_signal == 0):
-            return noisy_signal
+        # Add pre-processing validation
+        if np.all(noisy_signal == 0) or np.std(noisy_signal) < 1e-3:
+            return noisy_signal  # Return raw signal if input is invalid
         
         # Add pre-filtering normalization
         signal_mean = np.nanmean(noisy_signal)
         noisy_signal = (noisy_signal - signal_mean) / (np.std(noisy_signal) + 1e-9)
         
-        # Motion-aware learning rate adjustment
-        motion_factor = 1 + 2*motion_burst  # Increase learning during motion
-        self.learning_rate *= motion_factor
-        
-        # Noise-dependent regularization
-        noise_power = np.mean(reference_signal**2)
-        regularized_update = self.learning_rate / (1 + noise_power)
-        
         # Frequency-domain processing for better convergence
         freq_signal = np.fft.fft(noisy_signal)
         freq_reference = np.fft.fft(reference_signal)
         
-        # Phase-preserving spectral subtraction
-        clean_spectrum = np.abs(freq_signal) * np.exp(1j*np.angle(freq_signal)) - 0.1*freq_reference
+        # Motion-adaptive spectral subtraction
+        sub_ratio = 0.005 + 0.025*motion_burst  # Reduced base noise subtraction
+        noise_floor = 0.3 * np.abs(freq_signal) * (1 + np.linspace(0, 1, len(freq_signal)))  # Reduced from 0.4
+        
+        # Motion-adaptive spectral subtraction
+        clean_spectrum = freq_signal - sub_ratio*freq_reference
+        
+        # Add notch filter preservation
+        notch_freqs = [0.8, 4]  # Preserve pulse band
+        clean_spectrum = self.apply_notch_preservation(clean_spectrum, notch_freqs)
         
         filtered_signal = np.zeros_like(noisy_signal)
         dc_offset = np.median(noisy_signal)  # Capture DC offset before filtering
-        epsilon = 1e-6
         max_order = min(self.filter_length, len(noisy_signal) // 2)  # Dynamic upper limit
 
         # Add numerical stability measures
@@ -86,24 +85,47 @@ class AdaptiveFilter:
                                                      shape=shape,
                                                      strides=strides)[::-1]
 
-        # Vectorized computation
-        for i in range(len(noisy_signal)):
-            if i < self.filter_length:
-                continue
-            
-            # Extract reference window
-            ref_window = reference_signal[i-self.filter_length:i]
+        # Motion-aware learning rate adjustment (remove array operation)
+        base_learning_rate = self.learning_rate  # Store original scalar value
+
+        # Physiological envelope constraint
+        signal_envelope = np.abs(signal.hilbert(noisy_signal))
+        
+        # Vectorized computation using precomputed windows
+        for i in range(self.filter_length, len(noisy_signal)):
+            # Get precomputed reference window
+            ref_window = ref_windows[i - self.filter_length]
             
             # Calculate output and error
             output = np.dot(self.coefficients, ref_window)
             error = noisy_signal[i] - output
             
-            # Update coefficients with regularization
+            # Update coefficients with scalar operations
             norm = np.dot(ref_window, ref_window) + EPSILON
-            step_size = self.learning_rate[i] * error / norm
-            self.coefficients += step_size * ref_window
+            current_lr = base_learning_rate * (1 + 2.5*motion_burst[i])  # Reduced motion sensitivity
+            step_size = current_lr * error / norm
+            
+            # Enhanced coefficient update with gradient clipping
+            update = step_size * ref_window.astype(self.coefficients.dtype)
+            update = np.clip(update, -MAX_UPDATE, MAX_UPDATE)
+            self.coefficients += update
             
             filtered_signal[i] = output
+            
+            # Enforce physiological plausibility directly in main loop
+            if i > self.filter_length + 10:
+                # Moving average of previous 5 samples
+                prev_avg = np.mean(filtered_signal[i-5:i])
+                # Weighted combination of current and historical average
+                filtered_signal[i] = 0.85*filtered_signal[i] + 0.15*prev_avg
+                # Apply envelope constraint
+                if filtered_signal[i] > 1.3*signal_envelope[i]:  # From 1.2
+                    filtered_signal[i] = 0.85*filtered_signal[i] + 0.15*signal_envelope[i]
+
+            # Add periodic coefficient reset
+            if i % 1000 == 0 and np.mean(np.abs(self.coefficients)) < 1e-3:
+                self.initialize_coefficients()
+                logging.debug("Reset adaptive filter coefficients")
 
         if np.any(np.isnan(filtered_signal)):
             logging.warning("Adaptive filtering produced NaNs")
@@ -112,31 +134,16 @@ class AdaptiveFilter:
         filtered_signal = filtered_signal * (np.std(noisy_signal) + 1e-9) + signal_mean
         
         # Add post-processing variation
-        filtered_signal = filtered_signal + np.random.normal(0, 0.001, len(filtered_signal))  # Add micro-noise
+        filtered_signal = filtered_signal + np.random.normal(0, 0.005, len(filtered_signal))  # Increased noise
         
-        # Motion-aware stability control
-        self.learning_rate = np.clip(0.01 / (1 + 2*motion_burst), 0.001, 0.1)
-        
-        # Physiological constraint: limit output variation
-        for i in range(self.filter_length, len(noisy_signal)):
-            # ... existing filter code ...
-            
-            # Enforce physiological plausibility
-            if i > 10:
-                prev_avg = np.mean(filtered_signal[i-5:i])
-                filtered_signal[i] = 0.8*filtered_signal[i] + 0.2*prev_avg
-        
-        # Calculate noise level from reference signal
-        noise_level = np.sqrt(np.mean(reference_signal**2))  # RMS of reference signal
-        
-        # Stabilized learning rate using calculated noise level
-        base_lr = np.clip(0.05 / (1 + 2*noise_level), 0.005, 0.05)  # Less aggressive
-        self.learning_rate = base_lr * (1 + 0.5*np.mean(motion_burst))
-        
-        # Physiological envelope constraint
-        signal_envelope = np.abs(signal.hilbert(noisy_signal))
-        for i in range(len(filtered_signal)):
-            if filtered_signal[i] > 3.0*signal_envelope[i]:  # From 2.0→3.0
-                filtered_signal[i] = 0.95*filtered_signal[i] + 0.05*signal_envelope[i]
+
         
         return filtered_signal
+
+    def apply_notch_preservation(self, spectrum: np.ndarray, notch_freqs: list) -> np.ndarray:
+        """Apply notch filter preservation to the spectrum"""
+        for freq in notch_freqs:
+            start_bin = int((freq-0.2) * len(spectrum)/30)
+            end_bin = int((freq+0.2) * len(spectrum)/30)
+            spectrum[start_bin:end_bin] *= 0.2  # Attenuate instead of zeroing
+        return spectrum

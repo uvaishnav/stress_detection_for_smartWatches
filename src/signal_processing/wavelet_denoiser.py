@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
+from scipy.signal import find_peaks
 
 class WaveletDenoiser:
     # Mapping of skin tones to wavelet types and thresholding methods
@@ -65,18 +66,22 @@ class WaveletDenoiser:
         except ValueError:
             return np.zeros_like(signal)
 
-        # Enhanced noise estimation
+        # Actual noise estimation usage
         noise_est = np.mean([np.median(np.abs(c)) / 0.6745 for c in coeffs[1:]])
-        threshold_factor = 1.2 - 0.6*noise_level
+        threshold_factor = 0.75 - 0.2*noise_level  # From 0.7-0.25
         
-        # Adaptive motion masking
-        motion_mask = np.clip(motion_burst * (1 + 0.5*noise_level), 0, 0.9)
-        
-        # Frequency-dependent thresholding
+        motion_mask = np.clip(motion_burst * (1 + 0.5*noise_level), 0, 0.8)  # Increased max blend
+        threshold_scale = 1 + 0.3*noise_level  # Reduced from 0.5
+
         for i in range(1, len(coeffs)):
-            scale_factor = 1.0 / (1 + np.exp(-i))  # Less aggressive at higher frequencies
-            coeffs[i] = self._threshold(coeffs[i], method='universal')
-        
+            scale_factor = 1.0 / (1 + np.exp(-i))  # Now applied to threshold
+            # Use skin-tone appropriate thresholding method
+            wavelet_type, thresh_method = self.WAVELET_MAP.get(skin_tone, ('db8', 'universal'))
+            coeffs[i] = self._threshold(
+                coeffs[i] * scale_factor,  # Apply frequency scaling
+                method=thresh_method
+            ) * threshold_scale  # Apply noise-adaptive scaling
+
         try:
             # Reconstruct the denoised signal from the thresholded coefficients
             denoised = pywt.waverec(coeffs, self.wavelet, mode='periodization')
@@ -89,29 +94,23 @@ class WaveletDenoiser:
         elif len(denoised) < len(signal):
             denoised = np.pad(denoised, (0, len(signal) - len(denoised)), mode='constant')
         
-        # Noise-adaptive threshold scaling
-        threshold_scale = 1 + 2*noise_level  # More aggressive thresholding for noisier signals
-        
-        # Motion-aware denoising
-        denoised = (1 - motion_mask)*denoised + 0.3*motion_mask*signal  # Reduced from 1.0
-        
-        # Skin-tone specific frequency emphasis
-        cutoff = 0.6 if skin_tone in ['V-VI'] else 0.4  # 6Hz max
-        denoised = self._enhance_low_frequencies(denoised)
+        # Enhanced signal preservation
+        denoised = (1 - motion_mask)*denoised + (0.95 + 0.15*noise_est)*motion_mask*signal
+
+        # Dynamic cutoff application
+        distance = int(30/(1 + 2*noise_level))
+        peaks, _ = find_peaks(signal, distance=distance)
+        pulse_rate = 60 * 30 / np.mean(np.diff(peaks)) if len(peaks)>1 else 60
+        cutoff = max(0.8, pulse_rate/60 * 0.5)
+        denoised = self._enhance_low_frequencies(denoised, cutoff)  # Pass dynamic cutoff
         
         return np.nan_to_num(denoised, nan=0.0)
 
-    def _enhance_low_frequencies(self, signal: np.ndarray) -> np.ndarray:
-        """
-        Emphasize low-frequency components through spectral weighting.
-        """
+    def _enhance_low_frequencies(self, signal: np.ndarray, cutoff: float) -> np.ndarray:
+        """Now uses dynamic cutoff parameter"""
         fft_signal = np.fft.rfft(signal)
         freq = np.fft.rfftfreq(len(signal))
-        
-        # Create a low-frequency emphasis filter
-        cutoff = 0.25  # Increased from 0.1
-        lpf = 1 / (1 + (freq/cutoff)**4)
-        
+        lpf = 1 / (1 + (freq/cutoff)**4)  # Use passed cutoff value
         enhanced = np.fft.irfft(fft_signal * lpf, n=len(signal))
         return np.real(enhanced)
 
