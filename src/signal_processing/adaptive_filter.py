@@ -57,7 +57,7 @@ class AdaptiveFilter:
         freq_reference = np.fft.fft(reference_signal)
         
         # Motion-adaptive spectral subtraction
-        sub_ratio = 0.005 + 0.025*motion_burst  # Reduced base noise subtraction
+        sub_ratio = 0.003 + 0.02*motion_burst  # Reduced base noise subtraction
         noise_floor = 0.3 * np.abs(freq_signal) * (1 + np.linspace(0, 1, len(freq_signal)))  # Reduced from 0.4
         
         # Motion-adaptive spectral subtraction
@@ -117,10 +117,10 @@ class AdaptiveFilter:
                 # Moving average of previous 5 samples
                 prev_avg = np.mean(filtered_signal[i-5:i])
                 # Weighted combination of current and historical average
-                filtered_signal[i] = 0.85*filtered_signal[i] + 0.15*prev_avg
+                filtered_signal[i] = 0.9*filtered_signal[i] + 0.1*prev_avg
                 # Apply envelope constraint
-                if filtered_signal[i] > 1.3*signal_envelope[i]:  # From 1.2
-                    filtered_signal[i] = 0.85*filtered_signal[i] + 0.15*signal_envelope[i]
+                if filtered_signal[i] > 1.4*signal_envelope[i]:  # From 1.3
+                    filtered_signal[i] = 0.9*filtered_signal[i] + 0.1*signal_envelope[i]  # From 0.85/0.15
 
             # Add periodic coefficient reset
             if i % 1000 == 0 and np.mean(np.abs(self.coefficients)) < 1e-3:

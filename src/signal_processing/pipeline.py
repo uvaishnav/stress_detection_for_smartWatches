@@ -124,7 +124,7 @@ class SignalProcessingPipeline:
                 # Improved first chunk handling
                 if len(cleaned_chunks) == 0:  # First chunk special handling
                     logging.warning("First chunk rejected, using raw signal with noise reduction")
-                    chunk['bvp_cleaned'] = chunk['bvp'].values * 0.98  # Minimal noise reduction
+                    chunk['bvp_cleaned'] = chunk['bvp'].values * 0.99  # Minimal noise reduction
                 else:
                     # Use last valid chunk with overlap blending
                     prev_chunk = cleaned_chunks[-1].iloc[-overlap*2:]
@@ -236,13 +236,13 @@ class SignalProcessingPipeline:
         fft_acc = np.fft.rfft(acc_mag)
         
         # 2. Adaptive noise floor estimation
-        noise_floor = 0.4 * np.abs(fft_acc) * (1 + np.linspace(0, 1, len(fft_acc)))  # Reduced from 0.7
+        noise_floor = 0.3 * np.abs(fft_acc) * (1 + np.linspace(0, 1, len(fft_acc)))  # From 0.4
         
         # 3. Frequency-dependent subtraction
         enhanced_spectrum = np.where(
             np.abs(fft_signal) > noise_floor,
-            fft_signal - 0.5 * noise_floor * np.exp(1j * np.angle(fft_signal)),
-            fft_signal * 0.2  # Attenuate below noise floor
+            fft_signal - 0.3 * noise_floor * np.exp(1j * np.angle(fft_signal)),
+            fft_signal * 0.3  # From 0.2
         )
         
         # 4. Inverse transform with phase preservation
