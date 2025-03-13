@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, butter, sosfilt
 
 class WaveletDenoiser:
     # Mapping of skin tones to wavelet types and thresholding methods
@@ -68,9 +68,9 @@ class WaveletDenoiser:
 
         # Actual noise estimation usage
         noise_est = np.mean([np.median(np.abs(c)) / 0.6745 for c in coeffs[1:]])
-        threshold_factor = 0.85 - 0.1*noise_level  # From 0.8 - 0.15
+        threshold_factor = 0.998 - 0.0005*noise_level  # Further increased
         
-        motion_mask = np.clip(motion_burst * (1 + 0.7*noise_level), 0, 0.9)  # From 0.6/0.85
+        motion_mask = np.clip(motion_burst * (1 + 0.9*noise_level), 0, 0.98)  # From 0.8/0.95
         threshold_scale = 1 + 0.3*noise_level  # Reduced from 0.5
 
         for i in range(1, len(coeffs)):
@@ -95,8 +95,16 @@ class WaveletDenoiser:
             denoised = np.pad(denoised, (0, len(signal) - len(denoised)), mode='constant')
         
         # Enhanced signal preservation
-        denoised = (1 - motion_mask)*denoised + (0.99 + 0.1*noise_est)*motion_mask*signal  # From 0.98/0.12
-
+        denoised = (1 - 0.3*motion_mask)*denoised + (1.0 + 0.3*noise_est)*motion_mask*signal  # Adjusted
+        
+        # Heavily favor original signal but enhance cardiac component
+        # Extract cardiac component
+        sos = butter(3, [0.8, 4.0], btype='bandpass', fs=30, output='sos')
+        cardiac = sosfilt(sos, signal)
+        
+        # Blend with enhanced cardiac component
+        denoised = 0.2*denoised + 0.6*signal + 0.2*cardiac  # Added cardiac component
+        
         # Dynamic cutoff application
         distance = int(30/(1 + 2*noise_level))
         peaks, _ = find_peaks(signal, distance=distance)

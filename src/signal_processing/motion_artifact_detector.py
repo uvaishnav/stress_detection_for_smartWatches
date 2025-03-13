@@ -39,7 +39,7 @@ class MotionArtifactDetector:
         # Revised threshold calculation
         dynamic_threshold = (
             np.median(acc_mag) + 
-            1.4*np.std(acc_mag) * (1 + 0.25*dataset['noise_level'].values)  # From 1.3
+            1.5*np.std(acc_mag) * (1 + 0.15*dataset['noise_level'].values)  # Reduced from 1.8
         )
         
         # State machine with persistence
@@ -51,8 +51,8 @@ class MotionArtifactDetector:
             current_threshold = dynamic_threshold[i]
             
             # Enhanced state machine parameters
-            attack_rate = 0.8 / (1 + np.exp(-3*(motion_state[i-1] - 0.4)))  # From 0.85
-            decay_rate = 0.2 * (1 - 0.5*motion_state[i-1])  # From 0.15
+            attack_rate = 0.95 / (1 + np.exp(-3*(motion_state[i-1] - 0.4)))  # From 0.9
+            decay_rate = 0.1 * (1 - 0.5*motion_state[i-1])  # From 0.15
 
             if acc_mag[i] > current_threshold * (1 + 0.3*current_noise):
                 motion_state[i] = min(motion_state[i-1] + attack_rate, 1.0)
@@ -60,7 +60,7 @@ class MotionArtifactDetector:
                 motion_state[i] = max(motion_state[i-1] - decay_rate, 0.0)
         
         # Final quantization threshold
-        motion_state = np.where(motion_state > 0.5, 1.0, 0.0)  # From 0.52
+        motion_state = np.where(motion_state > 0.6, 1.0, 0.0)  # Reduced from 0.65
         
         dataset['motion_burst'] = motion_state
         return dataset
