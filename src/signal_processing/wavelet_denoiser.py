@@ -68,9 +68,9 @@ class WaveletDenoiser:
 
         # Actual noise estimation usage
         noise_est = np.mean([np.median(np.abs(c)) / 0.6745 for c in coeffs[1:]])
-        threshold_factor = 0.8 - 0.15*noise_level  # From 0.75 - 0.2
+        threshold_factor = 0.85 - 0.1*noise_level  # From 0.8 - 0.15
         
-        motion_mask = np.clip(motion_burst * (1 + 0.6*noise_level), 0, 0.85)  # From 0.5/0.8
+        motion_mask = np.clip(motion_burst * (1 + 0.7*noise_level), 0, 0.9)  # From 0.6/0.85
         threshold_scale = 1 + 0.3*noise_level  # Reduced from 0.5
 
         for i in range(1, len(coeffs)):
@@ -95,7 +95,7 @@ class WaveletDenoiser:
             denoised = np.pad(denoised, (0, len(signal) - len(denoised)), mode='constant')
         
         # Enhanced signal preservation
-        denoised = (1 - motion_mask)*denoised + (0.98 + 0.12*noise_est)*motion_mask*signal  # From 0.95/0.15
+        denoised = (1 - motion_mask)*denoised + (0.99 + 0.1*noise_est)*motion_mask*signal  # From 0.98/0.12
 
         # Dynamic cutoff application
         distance = int(30/(1 + 2*noise_level))

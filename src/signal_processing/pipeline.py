@@ -124,7 +124,7 @@ class SignalProcessingPipeline:
                 # Improved first chunk handling
                 if len(cleaned_chunks) == 0:  # First chunk special handling
                     logging.warning("First chunk rejected, using raw signal with noise reduction")
-                    chunk['bvp_cleaned'] = chunk['bvp'].values * 0.99  # Minimal noise reduction
+                    chunk['bvp_cleaned'] = chunk['bvp'].values * 0.995  # Minimal noise reduction
                 else:
                     # Use last valid chunk with overlap blending
                     prev_chunk = cleaned_chunks[-1].iloc[-overlap*2:]
@@ -181,7 +181,7 @@ class SignalProcessingPipeline:
         blended_chunk['bvp_cleaned'] = blended_array
         
         # Boosted signal preservation in blending
-        if np.std(blended_array) < 0.05*np.std(prev_signal):  # From 0.1
+        if np.std(blended_array) < 0.03*np.std(prev_signal):  # From 0.05
             blended_array = prev_signal[-len(blended_array):]
         
         return blended_chunk
@@ -236,13 +236,13 @@ class SignalProcessingPipeline:
         fft_acc = np.fft.rfft(acc_mag)
         
         # 2. Adaptive noise floor estimation
-        noise_floor = 0.3 * np.abs(fft_acc) * (1 + np.linspace(0, 1, len(fft_acc)))  # From 0.4
+        noise_floor = 0.25 * np.abs(fft_acc) * (1 + np.linspace(0, 1, len(fft_acc)))  # From 0.3
         
         # 3. Frequency-dependent subtraction
         enhanced_spectrum = np.where(
             np.abs(fft_signal) > noise_floor,
-            fft_signal - 0.3 * noise_floor * np.exp(1j * np.angle(fft_signal)),
-            fft_signal * 0.3  # From 0.2
+            fft_signal - 0.25 * noise_floor * np.exp(1j * np.angle(fft_signal)),
+            fft_signal * 0.4  # From 0.3
         )
         
         # 4. Inverse transform with phase preservation
@@ -290,7 +290,7 @@ class SignalProcessingPipeline:
         )
         
         # Add signal preservation guard
-        if np.std(blended_signal) < 0.05*np.std(prev_signal):  # From 0.1
+        if np.std(blended_signal) < 0.03*np.std(prev_signal):  # From 0.05
             blended_signal = prev_signal[-len(blended_signal):]
         
         return blended_signal
