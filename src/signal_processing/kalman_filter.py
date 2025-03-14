@@ -87,15 +87,19 @@ class KalmanFilter:
                 smooth_factor = 0.1 if motion_burst[i] else 0.05  # Further reduced
                 filtered[i] = smooth_factor*filtered[i] + (1-smooth_factor)*avg
                 
-            # Heavily favor original signal
-            filtered[i] = 0.2*filtered[i] + 0.8*signal[i]  # Further increased original signal
+            # Heavily favor original signal - ADJUST TO PREVENT AMPLIFICATION
+            filtered[i] = 0.3*filtered[i] + 0.7*signal[i]  # Adjusted from 0.2/0.8
         
         # Post-processing to preserve amplitude characteristics
         filtered_mean = np.mean(filtered)
         filtered_std = np.std(filtered)
         
-        # Rescale to match original signal statistics
+        # Rescale to match original signal statistics - ADD AMPLITUDE CONSTRAINT
         normalized = (filtered - filtered_mean) / (filtered_std + 1e-9)
         rescaled = normalized * signal_std + signal_mean
+        
+        # Add amplitude constraint to prevent inflation
+        if np.std(rescaled) > 1.1 * signal_std:  # Allow only 10% increase
+            rescaled = (rescaled - np.mean(rescaled)) * (1.1 * signal_std / np.std(rescaled)) + np.mean(rescaled)
         
         return rescaled

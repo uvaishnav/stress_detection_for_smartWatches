@@ -88,7 +88,7 @@ class WaveletDenoiser:
 
         # Actual noise estimation usage
         noise_est = np.mean([np.median(np.abs(c)) / 0.6745 for c in coeffs[1:]])
-        threshold_factor = 0.998 - 0.0005*noise_level  # Further increased
+        threshold_factor = 0.999 - 0.0002*noise_level  # Further increased from 0.998 - 0.0005
         
         # Handle motion_burst as array or scalar
         if isinstance(motion_burst, np.ndarray) and len(motion_burst) > 0:
@@ -96,13 +96,44 @@ class WaveletDenoiser:
         else:
             motion_value = motion_burst
         
-        motion_mask = np.clip(motion_value * (1 + 0.9*noise_level), 0, 0.98)  # From 0.8/0.95
-        threshold_scale = 1 + 0.3*noise_level  # Reduced from 0.5
+        motion_mask = np.clip(motion_value * (1 + 0.5*noise_level), 0, 0.9)  # Reduced from 0.9/0.98
+        threshold_scale = 1 + 0.2*noise_level  # Further reduced from 0.3
 
+        # Extract cardiac component before thresholding
+        sos = butter(4, [0.9, 3.0], btype='bandpass', fs=30, output='sos')
+        cardiac = sosfilt(sos, signal)
+        
+        # Find peaks in cardiac component
+        peaks, _ = find_peaks(cardiac, distance=15, prominence=0.1)
+        
+        # Create a cardiac mask for wavelet coefficients
+        cardiac_mask = np.zeros_like(signal)
+        if len(peaks) > 2:
+            # Calculate average peak-to-peak interval
+            peak_intervals = np.diff(peaks)
+            avg_interval = np.mean(peak_intervals)
+            
+            # Create a pulse enhancement window
+            window_width = int(avg_interval * 0.8)
+            if window_width > 2:
+                for p in peaks:
+                    if p > window_width and p < len(cardiac) - window_width:
+                        # Apply a Gaussian window around each peak
+                        window = np.exp(-0.5 * ((np.arange(-window_width, window_width) / (window_width/2))**2))
+                        cardiac_mask[p-window_width:p+window_width] = window
+        
+        # Apply more selective thresholding
         for i in range(1, len(coeffs)):
-            scale_factor = 1.0 / (1 + np.exp(-i))  # Now applied to threshold
+            # Use cardiac-aware thresholding
+            if i <= 2:  # Lower frequency bands - preserve cardiac
+                scale_factor = 0.5  # Less aggressive for cardiac bands
+            else:
+                scale_factor = 1.0 / (1 + np.exp(-(i-2)))  # More aggressive for higher bands
+            
             # Use skin-tone appropriate thresholding method
             wavelet_type, thresh_method = self.WAVELET_MAP.get(skin_tone, ('db8', 'universal'))
+            
+            # Apply thresholding with cardiac preservation
             coeffs[i] = self._threshold(
                 coeffs[i] * scale_factor,  # Apply frequency scaling
                 method=thresh_method
@@ -120,16 +151,18 @@ class WaveletDenoiser:
         elif len(denoised) < len(signal):
             denoised = np.pad(denoised, (0, len(signal) - len(denoised)), mode='constant')
         
-        # Enhanced signal preservation
-        denoised = (1 - 0.3*motion_mask)*denoised + (1.0 + 0.3*noise_est)*motion_mask*signal  # Adjusted
+        # Enhanced signal preservation with cardiac awareness
+        # Use cardiac_mask to preserve cardiac regions
+        cardiac_preservation = np.ones_like(signal)
+        cardiac_preservation = cardiac_preservation - 0.7 * cardiac_mask  # Preserve cardiac regions
         
-        # Heavily favor original signal but enhance cardiac component
-        # Extract cardiac component
-        sos = butter(3, [0.8, 4.0], btype='bandpass', fs=30, output='sos')
-        cardiac = sosfilt(sos, signal)
+        denoised = (1 - 0.2*motion_mask*cardiac_preservation)*denoised + (0.7 + 0.3*noise_est)*motion_mask*cardiac_preservation*signal
         
-        # Blend with enhanced cardiac component
-        denoised = 0.2*denoised + 0.6*signal + 0.2*cardiac  # Added cardiac component
+        # Enhance cardiac component
+        enhanced_cardiac = cardiac * 2.5  # Boost cardiac component
+        
+        # Blend with enhanced cardiac component - REDUCE AMPLIFICATION
+        denoised = 0.15*denoised + 0.55*signal + 0.3*enhanced_cardiac
         
         # Dynamic cutoff application
         distance = int(30/(1 + 2*noise_level))
@@ -137,6 +170,10 @@ class WaveletDenoiser:
         pulse_rate = 60 * 30 / np.mean(np.diff(peaks)) if len(peaks)>1 else 60
         cutoff = max(0.8, pulse_rate/60 * 0.5)
         denoised = self._enhance_low_frequencies(denoised, cutoff)  # Pass dynamic cutoff
+        
+        # Add amplitude constraint
+        if np.std(denoised) > 1.05 * np.std(signal):  # Allow only 5% increase
+            denoised = (denoised - np.mean(denoised)) * (1.05 * np.std(signal) / np.std(denoised)) + np.mean(denoised)
         
         return np.nan_to_num(denoised, nan=0.0)
 

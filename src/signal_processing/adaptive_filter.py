@@ -2,6 +2,7 @@ import numpy as np
 import logging
 from scipy import signal
 from scipy.signal import butter, sosfilt
+from scipy.signal import find_peaks
 
 logging.basicConfig(level=logging.INFO)
 
@@ -58,7 +59,7 @@ class AdaptiveFilter:
         freq_reference = np.fft.fft(reference_signal)
         
         # Virtually eliminate spectral subtraction
-        sub_ratio = 0.00005 + 0.0005*motion_burst  # Dramatically reduced from 0.0001 + 0.001
+        sub_ratio = 0.00001 + 0.0001*motion_burst  # Further reduced from 0.00005 + 0.0005
         
         # Motion-adaptive spectral subtraction
         clean_spectrum = freq_signal - sub_ratio*freq_reference
@@ -130,18 +131,41 @@ class AdaptiveFilter:
         if np.any(np.isnan(filtered_signal)):
             logging.warning("Adaptive filtering produced NaNs")
             
-        # Extract cardiac component for preservation
-        sos = butter(3, [0.8, 4.0], btype='bandpass', fs=30, output='sos')
+        # Extract cardiac component for preservation with a more precise filter
+        sos = butter(4, [0.9, 3.0], btype='bandpass', fs=30, output='sos')
         cardiac_component = sosfilt(sos, noisy_signal)
         
-        # Massive amplitude preservation
-        filtered_signal = filtered_signal * (2.0*np.std(noisy_signal) + 1e-9) + signal_mean
+        # Find peaks in cardiac component to identify pulse waves
+        peaks, _ = find_peaks(cardiac_component, distance=15, prominence=0.1)
+        
+        # If we found peaks, further enhance them
+        if len(peaks) > 2:
+            # Calculate average peak-to-peak interval
+            peak_intervals = np.diff(peaks)
+            avg_interval = np.mean(peak_intervals)
+            
+            # Create a pulse enhancement window
+            window_width = int(avg_interval * 0.8)
+            if window_width > 2:
+                # Apply peak enhancement
+                enhanced_cardiac = np.zeros_like(cardiac_component)
+                for p in peaks:
+                    if p > window_width and p < len(cardiac_component) - window_width:
+                        # Apply a Gaussian window around each peak
+                        window = np.exp(-0.5 * ((np.arange(-window_width, window_width) / (window_width/2))**2))
+                        enhanced_cardiac[p-window_width:p+window_width] += cardiac_component[p-window_width:p+window_width] * window * 2.0
+                
+                # Blend with enhanced cardiac
+                cardiac_component = cardiac_component + enhanced_cardiac
+        
+        # Amplitude preservation with reduced scaling
+        filtered_signal = filtered_signal * (0.8*np.std(noisy_signal) + 1e-9) + signal_mean  # Further reduced from 1.0
         
         # Blend with original signal and enhanced cardiac component
         filtered_signal = (
-            0.3 * filtered_signal + 
-            0.6 * noisy_signal + 
-            0.1 * (cardiac_component * 1.5)  # Reduced cardiac boost
+            0.15 * filtered_signal + 
+            0.55 * noisy_signal +  # Reduced from 0.7
+            0.3 * (cardiac_component * 2.0)  # Increased from 0.1 * 1.0
         )
         
         return filtered_signal
