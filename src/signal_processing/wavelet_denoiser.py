@@ -50,12 +50,32 @@ class WaveletDenoiser:
         :param noise_level: Noise level of the signal.
         :return: Denoised signal.
         """
+        # Handle empty input
         if len(signal) == 0 or np.all(np.isnan(signal)):
             return np.zeros_like(signal)
         
         # Replace NaNs in the signal with zeros
         signal = np.nan_to_num(signal, nan=0.0)
+        
+        # Check if input is a single sample or an array
+        if len(signal.shape) == 1:
+            # Process the entire array at once
+            return self._process_signal_batch(signal, motion_burst, skin_tone, noise_level)
+        else:
+            # Process each sample individually (legacy support)
+            denoised = np.zeros_like(signal)
+            for i in range(len(signal)):
+                denoised[i] = self._process_signal_batch(
+                    signal[i:i+1], 
+                    motion_burst[i:i+1], 
+                    skin_tone, 
+                    noise_level
+                )
+            return denoised
 
+    def _process_signal_batch(self, signal: np.ndarray, motion_burst: np.ndarray,
+                             skin_tone: str, noise_level: float) -> np.ndarray:
+        """Process a batch of signal data with wavelet denoising"""
         # Determine the maximum level of decomposition
         max_level = pywt.dwt_max_level(len(signal), self.wavelet)
         safe_level = min(self.level, max_level)
@@ -70,7 +90,13 @@ class WaveletDenoiser:
         noise_est = np.mean([np.median(np.abs(c)) / 0.6745 for c in coeffs[1:]])
         threshold_factor = 0.998 - 0.0005*noise_level  # Further increased
         
-        motion_mask = np.clip(motion_burst * (1 + 0.9*noise_level), 0, 0.98)  # From 0.8/0.95
+        # Handle motion_burst as array or scalar
+        if isinstance(motion_burst, np.ndarray) and len(motion_burst) > 0:
+            motion_value = np.mean(motion_burst)
+        else:
+            motion_value = motion_burst
+        
+        motion_mask = np.clip(motion_value * (1 + 0.9*noise_level), 0, 0.98)  # From 0.8/0.95
         threshold_scale = 1 + 0.3*noise_level  # Reduced from 0.5
 
         for i in range(1, len(coeffs)):

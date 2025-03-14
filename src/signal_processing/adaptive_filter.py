@@ -135,13 +135,13 @@ class AdaptiveFilter:
         cardiac_component = sosfilt(sos, noisy_signal)
         
         # Massive amplitude preservation
-        filtered_signal = filtered_signal * (10.0*np.std(noisy_signal) + 1e-9) + signal_mean
+        filtered_signal = filtered_signal * (2.0*np.std(noisy_signal) + 1e-9) + signal_mean
         
         # Blend with original signal and enhanced cardiac component
         filtered_signal = (
-            0.2 * filtered_signal + 
+            0.3 * filtered_signal + 
             0.6 * noisy_signal + 
-            0.2 * (cardiac_component * 2.0)  # Boosted cardiac component
+            0.1 * (cardiac_component * 1.5)  # Reduced cardiac boost
         )
         
         return filtered_signal
