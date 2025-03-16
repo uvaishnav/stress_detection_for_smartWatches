@@ -5,6 +5,7 @@ from .sensor_alignment import SensorAligner
 from .physionet_preparer import PhysioNetPreparer
 from .wesad_preparer import WESADPreparer
 import logging
+import numpy as np
 
 class UnifiedDataPipeline:
     def __init__(self, 
