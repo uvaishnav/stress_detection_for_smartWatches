@@ -290,9 +290,7 @@ class SignalProcessingPipeline:
         except Exception as e:
             print(f"Could not calculate SNR: {e}")
         
-        return full_dataset[['bvp', 'bvp_cleaned', 'bvp_smoothed', 'bvp_denoised', 
-                           'motion_burst', 'acc_mag', 'device', 'skin_tone', 
-                           'noise_level', 'label', 'subject_id']]
+        return full_dataset
 
     def _apply_device_specific_processing(self, dataset: pd.DataFrame) -> pd.DataFrame:
         # Device-specific accelerometer scaling and noise floor adjustment
@@ -667,12 +665,23 @@ class SignalProcessingPipeline:
     def _optimize_for_snr(self, dataset: pd.DataFrame) -> pd.DataFrame:
         """
         Final optimization step specifically targeting SNR improvement.
+        Also adds physiological features for the next phase.
         """
         # Create a copy with reset index to avoid duplicate index issues
         result_df = dataset.copy()
         
         # Create bandpass filter for cardiac band
         sos = butter(3, [0.8, 4.0], btype='bandpass', fs=30, output='sos')
+        
+        # Add new columns for physiological features
+        result_df['heart_rate'] = np.nan
+        result_df['pulse_amplitude'] = np.nan
+        result_df['ibi'] = np.nan
+        result_df['signal_quality'] = np.nan
+        result_df['cardiac_energy'] = np.nan
+        result_df['snr_local'] = np.nan
+        result_df['systolic_peaks'] = 0  # Will be 1 at peak locations
+        result_df['dicrotic_notches'] = 0  # Will be 1 at notch locations
         
         # Process in chunks to avoid memory issues
         chunk_size = 10000
@@ -686,7 +695,7 @@ class SignalProcessingPipeline:
             # Skip empty chunks
             if len(orig) == 0 or len(cleaned) == 0:
                 continue
-            
+                
             # Extract cardiac components with a narrower, more precise filter
             narrow_sos = butter(4, [0.9, 3.5], btype='bandpass', fs=30, output='sos')
             orig_cardiac = sosfilt(narrow_sos, orig)
@@ -696,56 +705,129 @@ class SignalProcessingPipeline:
             orig_noise = orig - orig_cardiac
             clean_noise = cleaned - clean_cardiac
             
-            # Calculate SNR with safety checks
-            orig_noise_power = np.mean(orig_noise**2) if len(orig_noise) > 0 else 1e-9
-            clean_noise_power = np.mean(clean_noise**2) if len(clean_noise) > 0 else 1e-9
+            # Calculate physiological features
             
-            orig_cardiac_power = np.mean(orig_cardiac**2) if len(orig_cardiac) > 0 else 1e-9
-            clean_cardiac_power = np.mean(clean_cardiac**2) if len(clean_cardiac) > 0 else 1e-9
+            # 1. Detect systolic peaks
+            peaks, peak_props = find_peaks(clean_cardiac, distance=15, prominence=0.1, width=3, rel_height=0.5)
             
-            orig_snr = orig_cardiac_power / (orig_noise_power + 1e-9)
-            clean_snr = clean_cardiac_power / (clean_noise_power + 1e-9)
+            # 2. Mark systolic peaks in the dataframe
+            if len(peaks) > 0:
+                result_df['systolic_peaks'].values[i:end_idx][peaks] = 1
             
-            # Significantly enhance cardiac component for better SNR
-            enhanced_cardiac = clean_cardiac * 2.5  # Increased from 1.2
-            
-            # Find peaks in cardiac component to identify pulse waves
-            peaks, _ = find_peaks(clean_cardiac, distance=15, prominence=0.1)
-            
-            # If we found peaks, further enhance them
-            if len(peaks) > 2:
-                # Create a pulse template from the average of detected pulses
-                pulse_width = int(30 / 1.5)  # Assuming 1.5 Hz average heart rate
-                template = np.zeros(pulse_width)
-                count = 0
+            # 3. Calculate heart rate from peaks
+            if len(peaks) > 1:
+                # Calculate instantaneous heart rate
+                peak_intervals = np.diff(peaks)
+                heart_rates = 60 * 30 / peak_intervals  # 30 Hz sampling rate
                 
-                for p in peaks:
-                    if p > pulse_width//2 and p < len(clean_cardiac) - pulse_width//2:
-                        segment = clean_cardiac[p-pulse_width//2:p+pulse_width//2]
-                        if len(segment) == pulse_width:
-                            template += segment
-                            count += 1
+                # Interpolate heart rate for all points
+                hr_times = peaks[:-1] + np.diff(peaks)//2
+                hr_values = np.interp(np.arange(len(clean_cardiac)), hr_times, heart_rates, 
+                                    left=heart_rates[0] if len(heart_rates) > 0 else 60, 
+                                    right=heart_rates[-1] if len(heart_rates) > 0 else 60)
                 
-                if count > 0:
-                    template /= count
-                    
-                    # Enhance the cardiac signal using template matching
-                    enhanced_cardiac = np.zeros_like(clean_cardiac)
-                    for p in peaks:
-                        if p > pulse_width//2 and p < len(clean_cardiac) - pulse_width//2:
-                            enhanced_cardiac[p-pulse_width//2:p+pulse_width//2] += template * 3.0
+                result_df['heart_rate'].values[i:end_idx] = hr_values
+                
+                # 4. Calculate IBI (inter-beat intervals)
+                ibi_values = np.zeros_like(clean_cardiac)
+                for j in range(len(peaks)-1):
+                    ibi_ms = (peaks[j+1] - peaks[j]) * (1000/30)  # Convert to milliseconds
+                    ibi_values[peaks[j]:peaks[j+1]] = ibi_ms
+                
+                result_df['ibi'].values[i:end_idx] = ibi_values
+                
+                # 5. Calculate pulse amplitude
+                pulse_amplitudes = np.zeros_like(clean_cardiac)
+                for j in range(len(peaks)):
+                    if peaks[j] > 5 and peaks[j] < len(clean_cardiac) - 5:
+                        # Find minimum before peak (within physiological range)
+                        search_start = max(0, peaks[j] - 15)
+                        valley = np.argmin(clean_cardiac[search_start:peaks[j]]) + search_start
+                        amplitude = clean_cardiac[peaks[j]] - clean_cardiac[valley]
+                        
+                        # Assign amplitude to this cardiac cycle
+                        if j < len(peaks) - 1:
+                            pulse_amplitudes[peaks[j]:peaks[j+1]] = amplitude
+                        else:
+                            pulse_amplitudes[peaks[j]:] = amplitude
+                
+                result_df['pulse_amplitude'].values[i:end_idx] = pulse_amplitudes
+                
+                # 6. Detect dicrotic notches
+                for j in range(len(peaks)-1):
+                    if peaks[j+1] - peaks[j] > 10:  # Ensure enough points between peaks
+                        # Search for notch in the latter half of the cardiac cycle
+                        search_start = peaks[j] + (peaks[j+1] - peaks[j]) // 3
+                        search_end = peaks[j+1] - 2
+                        
+                        if search_end > search_start:
+                            # Find local minimum in the latter part of the cycle
+                            segment = clean_cardiac[search_start:search_end]
+                            if len(segment) > 3:
+                                # Use second derivative to find inflection point
+                                second_deriv = np.diff(np.diff(segment))
+                                if len(second_deriv) > 0:
+                                    notch_idx = np.argmax(second_deriv) + search_start + 2
+                                    if notch_idx < end_idx - i:
+                                        result_df['dicrotic_notches'].values[i:end_idx][notch_idx] = 1
+            
+            # 7. Calculate signal quality (0-1)
+            # Based on SNR, peak regularity, and physiological plausibility
+            if len(peaks) > 3:
+                # Calculate peak interval regularity
+                peak_intervals = np.diff(peaks)
+                interval_regularity = 1 - min(0.9, np.std(peak_intervals) / np.mean(peak_intervals))
+                
+                # Calculate local SNR
+                local_snr = np.zeros_like(clean_cardiac)
+                window_size = 90  # 3 seconds at 30 Hz
+                
+                for j in range(0, len(clean_cardiac), window_size//2):
+                    end_j = min(j + window_size, len(clean_cardiac))
+                    if end_j - j > window_size//2:
+                        window_cardiac = clean_cardiac[j:end_j]
+                        window_noise = cleaned[j:end_j] - window_cardiac
+                        
+                        cardiac_power = np.mean(window_cardiac**2) if len(window_cardiac) > 0 else 1e-9
+                        noise_power = np.mean(window_noise**2) if len(window_noise) > 0 else 1e-9
+                        
+                        snr_value = cardiac_power / (noise_power + 1e-9)
+                        snr_score = min(1.0, snr_value / 10.0)  # Normalize to 0-1
+                        
+                        local_snr[j:end_j] = snr_score
+                
+                result_df['snr_local'].values[i:end_idx] = local_snr
+                
+                # Calculate physiological plausibility (heart rate in normal range)
+                hr_plausibility = np.ones_like(clean_cardiac)
+                hr_plausibility[hr_values < 40] = 0.5  # Penalize too low HR
+                hr_plausibility[hr_values > 180] = 0.5  # Penalize too high HR
+                
+                # Combine metrics for overall quality score
+                quality_score = 0.4 * interval_regularity + 0.4 * local_snr + 0.2 * hr_plausibility
+                result_df['signal_quality'].values[i:end_idx] = quality_score
+            else:
+                # Poor quality if no peaks detected
+                result_df['signal_quality'].values[i:end_idx] = 0.1
+            
+            # 8. Calculate cardiac energy
+            # Use periodogram to get energy in cardiac band
+            if len(clean_cardiac) > 64:
+                freqs, psd = periodogram(clean_cardiac, fs=30, nfft=max(256, len(clean_cardiac)))
+                cardiac_band = (freqs >= 0.8) & (freqs <= 4.0)
+                cardiac_energy = np.sum(psd[cardiac_band]) / np.sum(psd)
+                result_df['cardiac_energy'].values[i:end_idx] = cardiac_energy
             
             # Create optimized signal with enhanced cardiac component
-            # Remove more noise and add more cardiac component
-            optimized = cleaned - clean_noise * 0.8 + enhanced_cardiac
+            optimized = cleaned - clean_noise * 0.8 + clean_cardiac * 2.5
             
             # Apply optimized blending using direct array indexing
             result_df['bvp_cleaned'].values[i:end_idx] = optimized
             
-            # Enforce amplitude constraint - allow more cardiac enhancement
+            # Enforce amplitude constraint
             std_optimized = np.std(optimized)
             std_orig = np.std(orig)
-            if std_optimized > 1.5 * std_orig:  # Increased from 1.2
+            if std_optimized > 1.5 * std_orig:
                 scaling_factor = 1.5 * std_orig / std_optimized
                 mean_optimized = np.mean(optimized)
                 result_df['bvp_cleaned'].values[i:end_idx] = (
